@@ -1,6 +1,6 @@
 {
-  "name": "Stirling PDF",
-  "description": "Powerful open-source PDF manipulation tool to merge, split, rotate, watermark, compress, encrypt, and convert PDFs.",
+  "name": "PDF自行設計線上編輯",
+  "description": "強大且安全的 PDF 線上設計與編輯平台，支援新增文字、劃線標記、貼上截圖、合併、分割、旋轉與壓縮等全方位功能。",
   "requestFramePermissions": [],
   "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
 }

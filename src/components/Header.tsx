@@ -20,10 +20,10 @@ export const Header: React.FC<HeaderProps> = ({
   onViewChange,
 }) => {
   const categories: { id: ToolCategory; label: string }[] = [
-    { id: 'all', label: 'All Tools' },
-    { id: 'general', label: 'General' },
-    { id: 'security', label: 'Security' },
-    { id: 'misc', label: 'Misc' },
+    { id: 'all', label: '全部工具' },
+    { id: 'general', label: '常用工具' },
+    { id: 'security', label: '安全保密' },
+    { id: 'misc', label: '實用工具' },
   ];
 
   return (
@@ -36,10 +36,8 @@ export const Header: React.FC<HeaderProps> = ({
             </div>
             <div>
               <div className="flex items-center space-x-2">
-                <span className="font-bold text-lg text-neutral-900 tracking-tight">Stirling PDF</span>
-                <span className="text-xs bg-red-100 text-red-700 font-medium px-2 py-0.5 rounded-full">v1.0</span>
+                <span className="font-bold text-lg text-neutral-900 tracking-tight">PDF自行設計線上編輯</span>
               </div>
-              <p className="text-xs text-neutral-500 hidden sm:block">Open-Source Local PDF Suite</p>
             </div>
           </div>
 
@@ -53,7 +51,7 @@ export const Header: React.FC<HeaderProps> = ({
                   : 'text-neutral-600 hover:text-neutral-900 hover:bg-neutral-100'
               }`}
             >
-              Tools
+              功能工具
             </button>
             <button
               id="view-api-btn"
@@ -65,7 +63,7 @@ export const Header: React.FC<HeaderProps> = ({
               }`}
             >
               <Code className="w-4 h-4" />
-              <span>API Explorer</span>
+              <span>API 測試中心</span>
             </button>
           </div>
         </div>
@@ -93,7 +91,7 @@ export const Header: React.FC<HeaderProps> = ({
               <input
                 id="search-tools-input"
                 type="text"
-                placeholder="Search tools (e.g. merge, rotate)..."
+                placeholder="搜尋工具（如：新增文字、合併、旋轉）..."
                 value={searchQuery}
                 onChange={(e) => onSearchChange(e.target.value)}
                 className="w-full px-3 py-1.5 text-sm rounded-lg border border-neutral-200 bg-neutral-50 focus:bg-white focus:outline-none focus:ring-2 focus:ring-red-500 focus:border-transparent transition-all"

@@ -44,8 +44,8 @@ export const ToolCard: React.FC<ToolCardProps> = ({ tool, onSelect }) => {
             {renderIcon()}
           </div>
           {tool.popular && (
-            <span className="text-[11px] font-semibold text-neutral-500 bg-neutral-100 px-2 py-0.5 rounded-full">
-              Popular
+            <span className="text-[11px] font-semibold text-red-700 bg-red-50 px-2 py-0.5 rounded-full border border-red-200">
+              熱門
             </span>
           )}
         </div>
@@ -58,9 +58,9 @@ export const ToolCard: React.FC<ToolCardProps> = ({ tool, onSelect }) => {
       </div>
 
       <div className="mt-4 pt-3 border-t border-neutral-100 flex items-center justify-between text-xs text-neutral-500 font-medium">
-        <span className="capitalize">{tool.category}</span>
+        <span>{tool.category === 'general' ? '常用' : tool.category === 'security' ? '安全' : '實用'}</span>
         <span className="flex items-center text-red-600 font-semibold group-hover:translate-x-1 transition-transform">
-          Open Tool <ArrowRight className="w-3.5 h-3.5 ml-1" />
+          開啟工具 <ArrowRight className="w-3.5 h-3.5 ml-1" />
         </span>
       </div>
     </div>

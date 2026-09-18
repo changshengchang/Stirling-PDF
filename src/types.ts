@@ -32,10 +32,12 @@ export interface TextAnnotationItem {
   page: number; // 1-based page number
   x: number;    // PDF pt from left
   y: number;    // PDF pt from bottom
+  width?: number;  // PDF pt width
+  height?: number; // PDF pt height
   position?: string;
 }
 
-export type MarkupType = 'highlight' | 'underline' | 'strike' | 'rectangle';
+export type MarkupType = 'highlight' | 'underline' | 'strike' | 'rectangle' | 'mask' | 'mosaic';
 
 export interface MarkupAnnotationItem {
   id: string;

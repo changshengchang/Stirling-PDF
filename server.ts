@@ -435,6 +435,55 @@ async function startServer() {
             borderWidth: thickness,
             opacity,
           });
+        } else if (markup.type === 'mask') {
+          // 100% 不透光方形隱私遮罩圖層（塗黑 / 白底 / 灰色）
+          page.drawRectangle({
+            x: markup.x,
+            y: markup.y,
+            width,
+            height,
+            color: pdfColor,
+            opacity: 1.0,
+          });
+        } else if (markup.type === 'mosaic') {
+          // 馬賽克隱私遮罩（像素方格陣列徹底遮蔽個資與敏感文字）
+          const pixelSize = 5;
+          const cols = Math.ceil(width / pixelSize);
+          const rows = Math.ceil(height / pixelSize);
+          const mosaicTones = [
+            rgb(0.78, 0.82, 0.87),
+            rgb(0.55, 0.62, 0.70),
+            rgb(0.88, 0.91, 0.94),
+            rgb(0.40, 0.46, 0.54),
+          ];
+          for (let r = 0; r < rows; r++) {
+            for (let c = 0; c < cols; c++) {
+              const blockX = markup.x + c * pixelSize;
+              const blockY = markup.y + r * pixelSize;
+              const blockW = Math.min(pixelSize, markup.x + width - blockX);
+              const blockH = Math.min(pixelSize, markup.y + height - blockY);
+              if (blockW > 0 && blockH > 0) {
+                const toneIdx = (c * 7 + r * 13) % mosaicTones.length;
+                page.drawRectangle({
+                  x: blockX,
+                  y: blockY,
+                  width: blockW,
+                  height: blockH,
+                  color: mosaicTones[toneIdx],
+                  opacity: 1.0,
+                });
+              }
+            }
+          }
+          page.drawRectangle({
+            x: markup.x,
+            y: markup.y,
+            width,
+            height,
+            borderColor: rgb(0.4, 0.46, 0.54),
+            borderWidth: 0.5,
+            opacity: 0.8,
+          });
         }
       }
 
@@ -482,7 +531,32 @@ async function startServer() {
         const itemColor = rgb(itemRgb.r, itemRgb.g, itemRgb.b);
         const itemFontSize = Math.max(6, Math.min(120, parseInt(item.fontSize || '16', 10)));
         const itemUnderline = item.underline === true || item.underline === 'true' || item.underline === '1';
-        const itemLines = item.text.split(/\r?\n/);
+        const itemBoxWidth = item.width && item.width > 20 ? item.width : undefined;
+        let itemLines: string[] = [];
+        const rawLines = item.text.split(/\r?\n/);
+
+        if (itemBoxWidth) {
+          for (const rawLine of rawLines) {
+            if (!rawLine) {
+              itemLines.push('');
+              continue;
+            }
+            let cur = '';
+            for (const ch of rawLine) {
+              const test = cur + ch;
+              if (cur.length > 0 && itemFont.widthOfTextAtSize(test, itemFontSize) > itemBoxWidth) {
+                itemLines.push(cur);
+                cur = ch;
+              } else {
+                cur = test;
+              }
+            }
+            if (cur) itemLines.push(cur);
+          }
+        } else {
+          itemLines = rawLines;
+        }
+
         const itemLineHeight = itemFontSize * 1.35;
 
         // Determine target pages for this text item

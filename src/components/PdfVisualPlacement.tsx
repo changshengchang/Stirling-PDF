@@ -18,6 +18,8 @@ import {
   Move,
   Upload,
   Check,
+  Shield,
+  EyeOff,
 } from 'lucide-react';
 import { TextAnnotationItem, MarkupAnnotationItem, PastedImageItem, MarkupType } from '../types';
 
@@ -30,7 +32,7 @@ if (typeof window !== 'undefined' && 'Worker' in window) {
   }
 }
 
-export type EditorToolMode = 'text' | 'highlight' | 'underline' | 'strike' | 'rectangle' | 'image';
+export type EditorToolMode = 'text' | 'mosaic' | 'mask' | 'highlight' | 'underline' | 'strike' | 'rectangle' | 'image';
 
 export interface PdfVisualPlacementProps {
   file: File;
@@ -45,6 +47,7 @@ export interface PdfVisualPlacementProps {
   markups: MarkupAnnotationItem[];
   onAddMarkup: (markup: MarkupAnnotationItem) => void;
   onDeleteMarkup: (id: string) => void;
+  onUpdateMarkup?: (id: string, updates: Partial<MarkupAnnotationItem>) => void;
 
   images?: PastedImageItem[];
   pastedImages?: PastedImageItem[];
@@ -84,6 +87,7 @@ export const PdfVisualPlacement: React.FC<PdfVisualPlacementProps> = ({
   markups,
   onAddMarkup,
   onDeleteMarkup,
+  onUpdateMarkup,
   images: imagesProp = [],
   pastedImages: pastedImagesProp = [],
   onAddImage,
@@ -102,10 +106,10 @@ export const PdfVisualPlacement: React.FC<PdfVisualPlacementProps> = ({
 
   // Tool mode
   const [toolMode, setToolMode] = useState<EditorToolMode>('text');
-  const [markupColor, setMarkupColor] = useState<string>('#facc15');
+  const [markupColor, setMarkupColor] = useState<string>('#000000');
   const [markupThickness, setMarkupThickness] = useState<number>(2);
 
-  // Drawing state for highlight / line markups
+  // Drawing state for highlight / line / mask / mosaic markups
   const [isDrawing, setIsDrawing] = useState<boolean>(false);
   const [drawStart, setDrawStart] = useState<{ x: number; y: number } | null>(null);
   const [drawCurrent, setDrawCurrent] = useState<{ x: number; y: number } | null>(null);
@@ -118,6 +122,34 @@ export const PdfVisualPlacement: React.FC<PdfVisualPlacementProps> = ({
   const [draggingTextId, setDraggingTextId] = useState<string | null>(null);
   const [textDragOffset, setTextDragOffset] = useState<{ x: number; y: number }>({ x: 0, y: 0 });
   const [editingTextId, setEditingTextId] = useState<string | null>(null);
+  const [pendingTextDrag, setPendingTextDrag] = useState<{
+    id: string;
+    startX: number;
+    startY: number;
+    offset: { x: number; y: number };
+  } | null>(null);
+
+  // Resizing state for text boxes
+  const [resizingTextId, setResizingTextId] = useState<string | null>(null);
+  const [textResizeStart, setTextResizeStart] = useState<{
+    mouseX: number;
+    mouseY: number;
+    startWidth: number;
+    startHeight: number;
+    startFontSize: number;
+    mode: 'corner' | 'width' | 'height';
+  } | null>(null);
+
+  // Dragging & resizing states for markups (Masks, Mosaic, Rectangles)
+  const [draggingMarkupId, setDraggingMarkupId] = useState<string | null>(null);
+  const [markupDragOffset, setMarkupDragOffset] = useState<{ x: number; y: number }>({ x: 0, y: 0 });
+  const [resizingMarkupId, setResizingMarkupId] = useState<string | null>(null);
+  const [markupResizeStart, setMarkupResizeStart] = useState<{
+    mouseX: number;
+    mouseY: number;
+    startWidth: number;
+    startHeight: number;
+  } | null>(null);
 
   // Resizing state for images
   const [resizingImageId, setResizingImageId] = useState<string | null>(null);
@@ -335,23 +367,72 @@ export const PdfVisualPlacement: React.FC<PdfVisualPlacementProps> = ({
     }
   };
 
-  // Text Box Drag Start Handler
-  const handleStartDragText = (e: React.MouseEvent, itemId: string, itemX: number, itemY: number) => {
+  // Text Box Drag Start Handler: allows dragging from header, frame, or inside textarea
+  const handleStartDragText = (
+    e: React.MouseEvent,
+    itemId: string,
+    itemX: number,
+    itemY: number,
+    isFromTextarea: boolean = false
+  ) => {
     e.stopPropagation();
     onSelectActiveText(itemId);
-    setDraggingTextId(itemId);
     const canvas = canvasRef.current;
     if (!canvas) return;
     const rect = canvas.getBoundingClientRect();
     const pixelX = e.clientX - rect.left;
     const pixelY = e.clientY - rect.top;
     const { x: pdfX, y: pdfY } = screenToPdfCoords(pixelX, pixelY);
-    setTextDragOffset({ x: pdfX - itemX, y: pdfY - itemY });
+    const offset = { x: pdfX - itemX, y: pdfY - itemY };
+    setTextDragOffset(offset);
+
+    if (isFromTextarea) {
+      setPendingTextDrag({
+        id: itemId,
+        startX: e.clientX,
+        startY: e.clientY,
+        offset,
+      });
+    } else {
+      setDraggingTextId(itemId);
+    }
+  };
+
+  // Text Box Resize Start Handler
+  const handleStartResizeText = (
+    e: React.MouseEvent,
+    item: TextAnnotationItem,
+    mode: 'corner' | 'width' | 'height'
+  ) => {
+    e.stopPropagation();
+    e.preventDefault();
+    onSelectActiveText(item.id);
+    setResizingTextId(item.id);
+    const initialWidth = item.width || Math.max(120, Math.min(450, Math.round(Math.max(6, item.text.length) * item.fontSize * 0.65)));
+    const initialHeight = item.height || Math.max(30, Math.round((item.text.split('\n').length || 1) * item.fontSize * 1.3));
+    setTextResizeStart({
+      mouseX: e.clientX,
+      mouseY: e.clientY,
+      startWidth: initialWidth,
+      startHeight: initialHeight,
+      startFontSize: item.fontSize,
+      mode,
+    });
+  };
+
+  // Complete / finalize text editing and exit active state
+  const handleCompleteTextEdit = (e?: React.MouseEvent) => {
+    if (e) {
+      e.stopPropagation();
+      e.preventDefault();
+    }
+    setEditingTextId(null);
+    onSelectActiveText('');
   };
 
   // Window-level mouse event listeners for ultra-smooth drag tracking (no dropped items)
   useEffect(() => {
-    if (!draggingTextId && !draggingItemId && !resizingImageId) return;
+    if (!draggingTextId && !pendingTextDrag && !draggingItemId && !resizingImageId && !resizingTextId && !draggingMarkupId && !resizingMarkupId) return;
 
     const handleWindowMouseMove = (e: MouseEvent) => {
       const canvas = canvasRef.current;
@@ -360,11 +441,49 @@ export const PdfVisualPlacement: React.FC<PdfVisualPlacementProps> = ({
       const pixelX = e.clientX - rect.left;
       const pixelY = e.clientY - rect.top;
 
+      if (pendingTextDrag) {
+        const dist = Math.hypot(e.clientX - pendingTextDrag.startX, e.clientY - pendingTextDrag.startY);
+        if (dist > 3) {
+          setDraggingTextId(pendingTextDrag.id);
+          setTextDragOffset(pendingTextDrag.offset);
+          setPendingTextDrag(null);
+        }
+      }
+
       if (draggingTextId) {
         const { x: pdfX, y: pdfY } = screenToPdfCoords(pixelX, pixelY);
         const newX = Math.max(0, Math.min(pageSize.width - 10, Math.round(pdfX - textDragOffset.x)));
         const newY = Math.max(0, Math.min(pageSize.height - 10, Math.round(pdfY - textDragOffset.y)));
         onUpdateTextPosition(draggingTextId, newX, newY, currentPage);
+      } else if (resizingTextId && textResizeStart) {
+        const deltaX = (e.clientX - textResizeStart.mouseX) / scale;
+        const deltaY = (e.clientY - textResizeStart.mouseY) / scale;
+        const targetItem = textItems.find((t) => t.id === resizingTextId);
+        if (targetItem) {
+          const newWidth = Math.max(50, Math.min(pageSize.width - targetItem.x, Math.round(textResizeStart.startWidth + deltaX)));
+          if (textResizeStart.mode === 'corner') {
+            const ratio = Math.max(0.35, newWidth / Math.max(30, textResizeStart.startWidth));
+            const newFontSize = Math.max(8, Math.min(72, Math.round(textResizeStart.startFontSize * ratio)));
+            const newHeight = Math.max(24, Math.round(textResizeStart.startHeight + deltaY));
+            onUpdateTextItem?.(resizingTextId, { width: newWidth, height: newHeight, fontSize: newFontSize });
+          } else if (textResizeStart.mode === 'width') {
+            onUpdateTextItem?.(resizingTextId, { width: newWidth });
+          } else if (textResizeStart.mode === 'height') {
+            const newHeight = Math.max(24, Math.round(textResizeStart.startHeight + deltaY));
+            onUpdateTextItem?.(resizingTextId, { height: newHeight });
+          }
+        }
+      } else if (draggingMarkupId) {
+        const { x: pdfX, y: pdfY } = screenToPdfCoords(pixelX, pixelY);
+        const newX = Math.round(pdfX - markupDragOffset.x);
+        const newY = Math.round(pdfY - markupDragOffset.y);
+        onUpdateMarkup?.(draggingMarkupId, { x: newX, y: newY, page: currentPage });
+      } else if (resizingMarkupId && markupResizeStart) {
+        const deltaX = (e.clientX - markupResizeStart.mouseX) / scale;
+        const deltaY = (e.clientY - markupResizeStart.mouseY) / scale;
+        const newWidth = Math.max(10, Math.round(markupResizeStart.startWidth + deltaX));
+        const newHeight = Math.max(8, Math.round(markupResizeStart.startHeight + deltaY));
+        onUpdateMarkup?.(resizingMarkupId, { width: newWidth, height: newHeight });
       } else if (draggingItemId) {
         const { x: pdfX, y: pdfY } = screenToPdfCoords(pixelX, pixelY);
         const newX = Math.round(pdfX - dragOffset.x);
@@ -383,7 +502,17 @@ export const PdfVisualPlacement: React.FC<PdfVisualPlacementProps> = ({
     };
 
     const handleWindowMouseUp = () => {
+      if (pendingTextDrag) setPendingTextDrag(null);
       if (draggingTextId) setDraggingTextId(null);
+      if (resizingTextId) {
+        setResizingTextId(null);
+        setTextResizeStart(null);
+      }
+      if (draggingMarkupId) setDraggingMarkupId(null);
+      if (resizingMarkupId) {
+        setResizingMarkupId(null);
+        setMarkupResizeStart(null);
+      }
       if (draggingItemId) setDraggingItemId(null);
       if (resizingImageId) {
         setResizingImageId(null);
@@ -398,8 +527,18 @@ export const PdfVisualPlacement: React.FC<PdfVisualPlacementProps> = ({
       window.removeEventListener('mouseup', handleWindowMouseUp);
     };
   }, [
+    pendingTextDrag,
     draggingTextId,
     textDragOffset,
+    resizingTextId,
+    textResizeStart,
+    textItems,
+    onUpdateTextItem,
+    draggingMarkupId,
+    markupDragOffset,
+    resizingMarkupId,
+    markupResizeStart,
+    onUpdateMarkup,
     draggingItemId,
     dragOffset,
     resizingImageId,
@@ -424,9 +563,9 @@ export const PdfVisualPlacement: React.FC<PdfVisualPlacementProps> = ({
 
     if (pixelX < 0 || pixelX > rect.width || pixelY < 0 || pixelY > rect.height) return;
 
-    // Clicking blank canvas closes in-place editing focus
-    if (editingTextId) {
-      setEditingTextId(null);
+    // Clicking blank canvas closes in-place editing focus & active text box
+    if (activeTextId && !draggingTextId && !resizingTextId) {
+      handleCompleteTextEdit();
     }
 
     if (toolMode === 'text') {
@@ -438,7 +577,7 @@ export const PdfVisualPlacement: React.FC<PdfVisualPlacementProps> = ({
       return;
     }
 
-    if (toolMode === 'highlight' || toolMode === 'underline' || toolMode === 'strike' || toolMode === 'rectangle') {
+    if (toolMode === 'highlight' || toolMode === 'underline' || toolMode === 'strike' || toolMode === 'rectangle' || toolMode === 'mask' || toolMode === 'mosaic') {
       setIsDrawing(true);
       setDrawStart({ x: pixelX, y: pixelY });
       setDrawCurrent({ x: pixelX, y: pixelY });
@@ -534,8 +673,8 @@ export const PdfVisualPlacement: React.FC<PdfVisualPlacementProps> = ({
           y: startPdf.y,
           width: pdfWidth,
           height: pdfHeight,
-          color: markupColor,
-          opacity: toolMode === 'highlight' ? 0.35 : 0.85,
+          color: toolMode === 'mosaic' ? '#64748b' : (toolMode === 'mask' ? (markupColor || '#000000') : markupColor),
+          opacity: toolMode === 'highlight' ? 0.35 : (toolMode === 'mask' || toolMode === 'mosaic' ? 1.0 : 0.85),
           strokeWidth: markupThickness,
         };
 
@@ -587,7 +726,40 @@ export const PdfVisualPlacement: React.FC<PdfVisualPlacementProps> = ({
 
           <button
             type="button"
-            onClick={() => setToolMode('highlight')}
+            onClick={() => {
+              setToolMode('mosaic');
+              setMarkupColor('#64748b');
+            }}
+            className={`px-2.5 py-1.5 rounded-md font-medium flex items-center space-x-1.5 transition-all cursor-pointer ${
+              toolMode === 'mosaic' ? 'bg-indigo-600 text-white shadow-sm ring-1 ring-white/30' : 'bg-neutral-800 text-neutral-300 hover:bg-neutral-700'
+            }`}
+            title="馬賽克隱私遮罩：框選任何文字立即打上馬賽克保護個資"
+          >
+            <Shield className="w-3.5 h-3.5 text-indigo-300" />
+            <span>🛡️ 馬賽克遮罩 ({markups.filter((m) => m.type === 'mosaic').length})</span>
+          </button>
+
+          <button
+            type="button"
+            onClick={() => {
+              setToolMode('mask');
+              setMarkupColor('#000000');
+            }}
+            className={`px-2.5 py-1.5 rounded-md font-medium flex items-center space-x-1.5 transition-all cursor-pointer ${
+              toolMode === 'mask' ? 'bg-neutral-950 text-white shadow-sm ring-1 ring-white/30 border border-neutral-700' : 'bg-neutral-800 text-neutral-300 hover:bg-neutral-700'
+            }`}
+            title="方形遮罩圖層：100% 不透光遮蔽塗黑或白底遮除"
+          >
+            <EyeOff className="w-3.5 h-3.5 text-neutral-300" />
+            <span>⬛ 方形遮罩圖層 ({markups.filter((m) => m.type === 'mask').length})</span>
+          </button>
+
+          <button
+            type="button"
+            onClick={() => {
+              setToolMode('highlight');
+              setMarkupColor('#facc15');
+            }}
             className={`px-2.5 py-1.5 rounded-md font-medium flex items-center space-x-1.5 transition-all cursor-pointer ${
               toolMode === 'highlight' ? 'bg-amber-500 text-neutral-950 font-bold shadow-sm' : 'bg-neutral-800 text-neutral-300 hover:bg-neutral-700'
             }`}
@@ -712,18 +884,27 @@ export const PdfVisualPlacement: React.FC<PdfVisualPlacementProps> = ({
                 <button
                   key={item.id}
                   type="button"
-                  onClick={() => onSelectActiveText(item.id)}
+                  onClick={() => {
+                    if (item.id === activeTextId) {
+                      handleCompleteTextEdit();
+                    } else {
+                      onSelectActiveText(item.id);
+                      setEditingTextId(item.id);
+                    }
+                  }}
                   className={`px-2 py-1 rounded-md text-xs font-medium flex items-center space-x-1 transition-all cursor-pointer ${
                     item.id === activeTextId
-                      ? 'bg-red-600 text-white shadow-xs font-semibold'
+                      ? 'bg-blue-600 text-white shadow-xs font-semibold'
                       : 'bg-white border border-neutral-300 text-neutral-700 hover:bg-neutral-100'
                   }`}
+                  title={item.id === activeTextId ? '點擊完成確定' : '點擊選取編輯'}
                 >
                   <span>文字 #{idx + 1}</span>
                   <span
                     className="w-2.5 h-2.5 rounded-full inline-block border border-white"
                     style={{ backgroundColor: item.color }}
                   />
+                  {item.id === activeTextId && <Check className="w-3 h-3 ml-0.5" />}
                 </button>
               ))}
               <button
@@ -735,9 +916,115 @@ export const PdfVisualPlacement: React.FC<PdfVisualPlacementProps> = ({
                 <Plus className="w-3.5 h-3.5" />
                 <span>新增文字</span>
               </button>
+              {activeTextId && (
+                <button
+                  type="button"
+                  onClick={handleCompleteTextEdit}
+                  className="px-2 py-1 bg-emerald-600 hover:bg-emerald-500 text-white rounded-md font-bold text-xs flex items-center space-x-1 cursor-pointer shadow-xs"
+                  title="完成所有文字輸入確認"
+                >
+                  <Check className="w-3.5 h-3.5" />
+                  <span>完成確認</span>
+                </button>
+              )}
             </div>
             <span className="text-[11px] text-blue-700 bg-blue-50 px-2 py-0.5 rounded border border-blue-200 font-medium">
-              💡 提示：在畫面上可直接「按住頂部拖曳移動」，並可「直接在方塊內打字編輯」，無須回到對話框！
+              💡 提示：按住文字頂部可「拖曳移動」，拖曳右側或右下角可「調整方塊大小」，點擊「完成」即可確認固定！
+            </span>
+          </div>
+        )}
+
+        {toolMode === 'mosaic' && (
+          <div className="flex items-center flex-wrap gap-3">
+            <div className="flex items-center space-x-1.5">
+              <span className="font-semibold text-neutral-800">🛡️ 馬賽克隱私遮罩：</span>
+              <span className="text-neutral-600 text-xs">
+                在 PDF 畫面上「滑鼠按住拖曳」框選任何文字或個資，立即打上馬賽克保護隱私！
+              </span>
+            </div>
+            <button
+              type="button"
+              onClick={() => {
+                const newMarkup: MarkupAnnotationItem = {
+                  id: `markup-${Date.now()}`,
+                  type: 'mosaic',
+                  page: currentPage,
+                  x: Math.round(pageSize.width / 2 - 60),
+                  y: Math.round(pageSize.height / 2 - 12),
+                  width: 120,
+                  height: 24,
+                  color: '#64748b',
+                  opacity: 1.0,
+                  strokeWidth: 1,
+                };
+                onAddMarkup(newMarkup);
+              }}
+              className="px-2.5 py-1 bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-semibold rounded-md flex items-center space-x-1 cursor-pointer shadow-xs active:scale-95"
+            >
+              <Plus className="w-3.5 h-3.5" />
+              <span>＋ 在本頁中央新增馬賽克遮罩</span>
+            </button>
+            <span className="text-neutral-500 text-[11px]">
+              （提示：產生的馬賽克遮罩可按住隨意拖曳，拖曳右下角可放大縮小）
+            </span>
+          </div>
+        )}
+
+        {toolMode === 'mask' && (
+          <div className="flex items-center flex-wrap gap-3">
+            <div className="flex items-center space-x-1.5">
+              <span className="font-semibold text-neutral-800">⬛ 方形遮罩圖層：</span>
+              {[
+                { name: '⬛ 純黑塗黑 (Blackout)', hex: '#000000' },
+                { name: '⬜ 純白遮除 (Whiteout)', hex: '#ffffff' },
+                { name: '🔘 灰色隱私條', hex: '#64748b' },
+              ].map((c) => (
+                <button
+                  key={c.hex}
+                  type="button"
+                  onClick={() => setMarkupColor(c.hex)}
+                  className={`px-2 py-0.5 rounded text-xs font-medium border flex items-center space-x-1 cursor-pointer transition-colors ${
+                    markupColor === c.hex ? 'bg-neutral-900 text-white border-neutral-900 shadow-xs' : 'bg-white text-neutral-700 border-neutral-300 hover:bg-neutral-100'
+                  }`}
+                >
+                  <span className="w-2.5 h-2.5 rounded-full inline-block border border-neutral-400" style={{ backgroundColor: c.hex }} />
+                  <span>{c.name}</span>
+                </button>
+              ))}
+              <label className="cursor-pointer flex items-center text-xs text-neutral-600 space-x-1 ml-1" title="自訂遮罩顏色">
+                <span>自訂：</span>
+                <input
+                  type="color"
+                  value={markupColor}
+                  onChange={(e) => setMarkupColor(e.target.value)}
+                  className="w-5 h-5 rounded border border-neutral-300 p-0 cursor-pointer"
+                />
+              </label>
+            </div>
+            <button
+              type="button"
+              onClick={() => {
+                const newMarkup: MarkupAnnotationItem = {
+                  id: `markup-${Date.now()}`,
+                  type: 'mask',
+                  page: currentPage,
+                  x: Math.round(pageSize.width / 2 - 60),
+                  y: Math.round(pageSize.height / 2 - 12),
+                  width: 120,
+                  height: 24,
+                  color: markupColor || '#000000',
+                  opacity: 1.0,
+                  strokeWidth: 1,
+                };
+                onAddMarkup(newMarkup);
+              }}
+              className="px-2.5 py-1 bg-neutral-900 hover:bg-black text-white text-xs font-semibold rounded-md flex items-center space-x-1 cursor-pointer shadow-xs active:scale-95"
+            >
+              <Plus className="w-3.5 h-3.5" />
+              <span>＋ 在本頁中央新增方形遮罩</span>
+            </button>
+            <span className="text-neutral-500 text-[11px]">
+              👉 拖曳框選文字即可產生 100% 不透光遮罩圖層，顧及隱私
             </span>
           </div>
         )}
@@ -854,13 +1141,25 @@ export const PdfVisualPlacement: React.FC<PdfVisualPlacementProps> = ({
               return (
                 <div
                   key={m.id}
-                  className="absolute group z-10 transition-opacity"
+                  onMouseDown={(e) => {
+                    e.stopPropagation();
+                    const canvas = canvasRef.current;
+                    if (!canvas) return;
+                    const rect = canvas.getBoundingClientRect();
+                    const pixelX = e.clientX - rect.left;
+                    const pixelY = e.clientY - rect.top;
+                    const { x: pdfX, y: pdfY } = screenToPdfCoords(pixelX, pixelY);
+                    setDraggingMarkupId(m.id);
+                    setMarkupDragOffset({ x: pdfX - m.x, y: pdfY - m.y });
+                  }}
+                  className="absolute group z-20 transition-opacity cursor-move select-none"
                   style={{
                     left: `${leftPx}px`,
                     top: `${topPx}px`,
                     width: `${widthPx}px`,
                     height: `${heightPx}px`,
                   }}
+                  title="可拖曳移動此標記/遮罩，右下角可縮放大小"
                 >
                   {/* Visual Representation */}
                   {m.type === 'highlight' && (
@@ -904,6 +1203,71 @@ export const PdfVisualPlacement: React.FC<PdfVisualPlacementProps> = ({
                     />
                   )}
 
+                  {m.type === 'mask' && (
+                    <div
+                      className="w-full h-full rounded-xs pointer-events-none shadow-xs flex items-center justify-center overflow-hidden"
+                      style={{
+                        backgroundColor: m.color || '#000000',
+                        opacity: m.opacity !== undefined ? m.opacity : 1.0,
+                        border: m.color === '#ffffff' ? '1px dashed #94a3b8' : '1px solid rgba(0,0,0,0.15)',
+                      }}
+                    >
+                      {m.color === '#ffffff' && (
+                        <span className="text-[9px] text-neutral-400 select-none font-mono opacity-80 px-1 bg-white/80 rounded">
+                          白底遮罩
+                        </span>
+                      )}
+                      {m.color === '#000000' && (
+                        <span className="text-[9px] text-neutral-400 select-none font-mono tracking-wider opacity-40">
+                          REDACTED
+                        </span>
+                      )}
+                    </div>
+                  )}
+
+                  {m.type === 'mosaic' && (
+                    <div
+                      className="w-full h-full rounded-xs pointer-events-none shadow-xs relative overflow-hidden"
+                      style={{
+                        backgroundImage: `
+                          linear-gradient(45deg, #94a3b8 25%, transparent 25%),
+                          linear-gradient(-45deg, #94a3b8 25%, transparent 25%),
+                          linear-gradient(45deg, transparent 75%, #94a3b8 75%),
+                          linear-gradient(-45deg, transparent 75%, #94a3b8 75%)
+                        `,
+                        backgroundSize: '8px 8px',
+                        backgroundPosition: '0 0, 0 4px, 4px -4px, -4px 0px',
+                        backgroundColor: '#cbd5e1',
+                        border: '1px solid #64748b',
+                        opacity: 0.98,
+                      }}
+                    >
+                      <div className="absolute inset-0 bg-neutral-900/10 backdrop-blur-[1px]" />
+                      <span className="absolute bottom-0.5 right-1 text-[8px] font-bold text-neutral-700 bg-white/85 px-1 rounded shadow-2xs">
+                        馬賽克
+                      </span>
+                    </div>
+                  )}
+
+                  {/* Corner Resize Handle for Mask, Mosaic, Rectangle */}
+                  {(m.type === 'mask' || m.type === 'mosaic' || m.type === 'rectangle') && (
+                    <div
+                      onMouseDown={(e) => {
+                        e.stopPropagation();
+                        e.preventDefault();
+                        setResizingMarkupId(m.id);
+                        setMarkupResizeStart({
+                          mouseX: e.clientX,
+                          mouseY: e.clientY,
+                          startWidth: m.width,
+                          startHeight: m.height,
+                        });
+                      }}
+                      className="absolute -bottom-1.5 -right-1.5 w-3.5 h-3.5 bg-blue-600 border border-white rounded-full cursor-nwse-resize opacity-0 group-hover:opacity-100 shadow-md z-30 transition-opacity"
+                      title="拖曳調整大小"
+                    />
+                  )}
+
                   {/* Hover Delete Button */}
                   <button
                     type="button"
@@ -911,7 +1275,7 @@ export const PdfVisualPlacement: React.FC<PdfVisualPlacementProps> = ({
                       e.stopPropagation();
                       onDeleteMarkup(m.id);
                     }}
-                    title="刪除此標記"
+                    title="刪除此標記/遮罩"
                     className="absolute -top-3 -right-3 w-5 h-5 bg-red-600 text-white rounded-full flex items-center justify-center opacity-0 group-hover:opacity-100 shadow-md cursor-pointer transition-opacity z-30"
                   >
                     <Trash2 className="w-3 h-3" />
@@ -923,17 +1287,35 @@ export const PdfVisualPlacement: React.FC<PdfVisualPlacementProps> = ({
           {/* 2. Draft Dragging Markup Preview */}
           {isDrawing && drawStart && drawCurrent && (
             <div
-              className="absolute pointer-events-none z-20 border border-dashed rounded-xs"
+              className="absolute pointer-events-none z-20 border border-dashed rounded-xs overflow-hidden"
               style={{
                 left: `${Math.min(drawStart.x, drawCurrent.x)}px`,
                 top: `${Math.min(drawStart.y, drawCurrent.y)}px`,
                 width: `${Math.abs(drawCurrent.x - drawStart.x)}px`,
                 height: `${Math.abs(drawCurrent.y - drawStart.y)}px`,
-                borderColor: markupColor,
-                backgroundColor: toolMode === 'highlight' ? markupColor : 'transparent',
-                opacity: toolMode === 'highlight' ? 0.35 : 0.8,
+                borderColor: toolMode === 'mosaic' ? '#64748b' : markupColor,
+                backgroundColor:
+                  toolMode === 'highlight'
+                    ? markupColor
+                    : toolMode === 'mask'
+                    ? markupColor || '#000000'
+                    : toolMode === 'mosaic'
+                    ? '#94a3b8'
+                    : 'transparent',
+                opacity: toolMode === 'highlight' ? 0.35 : 0.9,
               }}
-            />
+            >
+              {toolMode === 'mosaic' && (
+                <div className="w-full h-full flex items-center justify-center text-[10px] text-white font-bold bg-neutral-700/60">
+                  🛡️ 馬賽克遮罩中...
+                </div>
+              )}
+              {toolMode === 'mask' && (
+                <div className="w-full h-full flex items-center justify-center text-[10px] text-neutral-400 font-bold">
+                  ⬛ 隱私遮罩
+                </div>
+              )}
+            </div>
           )}
 
           {/* 3. Render All Pasted Images / Screenshots on Current Page */}
@@ -1014,30 +1396,78 @@ export const PdfVisualPlacement: React.FC<PdfVisualPlacementProps> = ({
               const { x: leftPx, y: topPx } = pdfToScreenCoords(item.x, item.y);
               const isActive = item.id === activeTextId;
               const isBeingDragged = draggingTextId === item.id;
-              const isEditingThis = editingTextId === item.id || isActive;
 
+              // If NOT active: render in confirmed finalized state (no blue borders, no toolbar, pure text)
+              if (!isActive) {
+                return (
+                  <div
+                    key={item.id}
+                    onMouseDown={(e) => handleStartDragText(e, item.id, item.x, item.y, false)}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      onSelectActiveText(item.id);
+                      setEditingTextId(item.id);
+                    }}
+                    className="absolute group select-none cursor-move transition-all z-20"
+                    style={{
+                      left: `${leftPx}px`,
+                      top: `${topPx}px`,
+                      transform: 'translate(0, -100%)',
+                      width: item.width ? `${item.width * scale}px` : undefined,
+                    }}
+                    title="按住方框可隨意拖曳移動，點擊可重新編輯文字"
+                  >
+                    <div
+                      className="p-1 rounded transition-all border border-transparent group-hover:border-blue-400 group-hover:bg-blue-50/25 group-hover:shadow-xs"
+                      style={{
+                        color: item.color,
+                        textDecoration: item.underline ? 'underline' : 'none',
+                        fontSize: `${Math.max(10, item.fontSize * scale)}px`,
+                        fontWeight: 700,
+                        lineHeight: 1.25,
+                        textDecorationThickness: '2px',
+                        whiteSpace: 'pre-wrap',
+                        wordBreak: 'break-word',
+                        minWidth: '30px',
+                      }}
+                    >
+                      {item.text || <span className="text-neutral-400 italic font-normal">（點擊輸入文字）</span>}
+                    </div>
+                  </div>
+                );
+              }
+
+              // If ACTIVE: render full toolbar, drag handle, textarea, and resize handles
               return (
                 <div
                   key={item.id}
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    onSelectActiveText(item.id);
-                  }}
-                  className={`absolute flex flex-col items-start select-none transition-shadow ${
-                    isActive ? 'z-40' : 'z-20 opacity-90 hover:opacity-100'
-                  }`}
+                  onClick={(e) => e.stopPropagation()}
+                  className="absolute flex flex-col items-start select-none transition-shadow z-40"
                   style={{
                     left: `${leftPx}px`,
                     top: `${topPx}px`,
                     transform: 'translate(0, -100%)',
                   }}
                 >
-                  {/* Floating Mini Formatting Toolbar (shown when active) */}
-                  {isActive && (
+                  {/* Floating Mini Formatting Toolbar (only shown when selected & editing, hidden while dragging to keep view clean) */}
+                  {!isBeingDragged && (
                     <div
                       onMouseDown={(e) => e.stopPropagation()}
                       className="mb-1 bg-neutral-900 text-white px-2 py-1 rounded-lg shadow-xl flex items-center space-x-2 text-xs animate-in fade-in zoom-in-95 duration-100"
                     >
+                      {/* 1. Done editing checkmark (Keep the top one as requested) */}
+                      <button
+                        type="button"
+                        onClick={(e) => handleCompleteTextEdit(e)}
+                        className="px-2.5 py-0.5 bg-emerald-600 hover:bg-emerald-500 text-white rounded text-[11px] font-bold flex items-center space-x-1 cursor-pointer shadow-xs active:scale-95 transition-transform ring-1 ring-white/20"
+                        title="完成輸入確定狀態"
+                      >
+                        <Check className="w-3.5 h-3.5" />
+                        <span>完成</span>
+                      </button>
+
+                      <div className="w-[1px] h-3.5 bg-neutral-700" />
+
                       {/* Color dots */}
                       <div className="flex items-center space-x-1">
                         {['#dc2626', '#1d4ed8', '#16a34a', '#000000', '#ea580c', '#9333ea'].map((c) => (
@@ -1112,87 +1542,89 @@ export const PdfVisualPlacement: React.FC<PdfVisualPlacementProps> = ({
                           <Trash2 className="w-3 h-3" />
                         </button>
                       )}
-
-                      {/* Done editing checkmark */}
-                      <button
-                        type="button"
-                        onClick={() => setEditingTextId(null)}
-                        className="px-1.5 py-0.5 bg-emerald-600 hover:bg-emerald-500 text-white rounded text-[10px] font-medium flex items-center space-x-0.5 cursor-pointer"
-                        title="完成編輯"
-                      >
-                        <Check className="w-3 h-3" />
-                        <span>完成</span>
-                      </button>
                     </div>
                   )}
 
-                  {/* Drag Handle & Status Header */}
-                  <div
-                    onMouseDown={(e) => handleStartDragText(e, item.id, item.x, item.y)}
-                    className={`flex items-center space-x-1.5 px-2 py-0.5 rounded-t text-[10px] font-bold shadow-xs whitespace-nowrap cursor-grab active:cursor-grabbing border border-b-0 transition-colors ${
-                      isActive
-                        ? isBeingDragged
-                          ? 'bg-blue-700 text-white border-blue-700 ring-2 ring-blue-400'
-                          : 'bg-blue-600 text-white border-blue-600'
-                        : 'bg-neutral-800 text-neutral-200 border-neutral-700 hover:bg-neutral-700'
-                    }`}
-                    title="按住此處可自由拖曳調整位置"
-                  >
-                    <Move className="w-3 h-3" />
-                    <span>#{idx + 1} 拖曳移動 ({item.x}, {item.y})</span>
-                    {isActive && (
-                      <span className="text-[9px] bg-blue-800/80 px-1 py-0.2 rounded font-normal">
-                        點下方直接編輯
-                      </span>
-                    )}
-                  </div>
-
-                  {/* Direct In-Place Editable Text Area */}
-                  <div
-                    className={`border rounded-b shadow-md transition-all ${
-                      isActive
-                        ? 'bg-white border-blue-500 ring-2 ring-blue-200'
-                        : 'bg-white/90 border-neutral-400 hover:border-neutral-600'
-                    }`}
-                  >
-                    {isEditingThis ? (
-                      <textarea
-                        value={item.text}
-                        onChange={(e) => onUpdateTextItem?.(item.id, { text: e.target.value })}
-                        onFocus={() => {
-                          onSelectActiveText(item.id);
-                          setEditingTextId(item.id);
-                        }}
-                        onMouseDown={(e) => e.stopPropagation()}
-                        placeholder="在此直接輸入修改文字..."
-                        rows={Math.max(1, (item.text || '').split('\n').length)}
-                        className="p-1.5 bg-transparent resize-none outline-none block font-bold leading-tight min-w-[120px] max-w-[400px]"
-                        style={{
-                          color: item.color,
-                          textDecoration: item.underline ? 'underline' : 'none',
-                          fontSize: `${Math.max(11, item.fontSize * scale)}px`,
-                          lineHeight: 1.25,
-                          textDecorationThickness: '2px',
-                        }}
-                      />
-                    ) : (
-                      <div
-                        onClick={() => {
-                          onSelectActiveText(item.id);
-                          setEditingTextId(item.id);
-                        }}
-                        className="px-2 py-1 font-bold whitespace-pre-wrap cursor-text min-w-[80px]"
-                        style={{
-                          color: item.color,
-                          textDecoration: item.underline ? 'underline' : 'none',
-                          fontSize: `${Math.max(11, item.fontSize * scale)}px`,
-                          lineHeight: 1.25,
-                          textDecorationThickness: '2px',
-                        }}
-                      >
-                        {item.text || <span className="text-neutral-400 italic font-normal">點擊直接輸入文字...</span>}
+                  {/* Drag Handle & Status Header (hidden while dragging so no big blue block appears during drag, only shown during selection/edit; lower redundant done button removed) */}
+                  {!isBeingDragged && (
+                    <div
+                      onMouseDown={(e) => handleStartDragText(e, item.id, item.x, item.y, false)}
+                      className="flex items-center justify-between px-2 py-0.5 rounded-t text-[10px] font-bold shadow-xs whitespace-nowrap cursor-move border border-b-0 transition-colors w-full bg-blue-600 text-white border-blue-600"
+                      title="按住此處可自由拖曳移動位置"
+                    >
+                      <div className="flex items-center space-x-1 text-blue-100">
+                        <Move className="w-3 h-3" />
+                        <span>#{idx + 1} 拖曳移動</span>
                       </div>
-                    )}
+
+                      <span className="text-[9px] text-blue-100 font-mono">({item.x}, {item.y})</span>
+                    </div>
+                  )}
+
+                  {/* Direct In-Place Editable Text Area & Resizable Container - ENTIRE CONTAINER DRAGGABLE */}
+                  <div
+                    onMouseDown={(e) => handleStartDragText(e, item.id, item.x, item.y, false)}
+                    className={`relative bg-white border border-blue-500 ring-2 ring-blue-300/60 shadow-lg cursor-move ${
+                      isBeingDragged ? 'rounded' : 'rounded-b'
+                    }`}
+                    title="按住此方框任意處可拖曳移動，點擊文字可直接編輯"
+                  >
+                    <textarea
+                      value={item.text}
+                      onChange={(e) => onUpdateTextItem?.(item.id, { text: e.target.value })}
+                      onFocus={() => {
+                        onSelectActiveText(item.id);
+                        setEditingTextId(item.id);
+                      }}
+                      onKeyDown={(e) => {
+                        if (e.key === 'Escape' || (e.key === 'Enter' && (e.ctrlKey || e.metaKey))) {
+                          handleCompleteTextEdit();
+                        }
+                      }}
+                      onMouseDown={(e) => {
+                        handleStartDragText(e, item.id, item.x, item.y, true);
+                      }}
+                      placeholder="在此直接輸入文字..."
+                      rows={Math.max(1, (item.text || '').split('\n').length)}
+                      className="p-2 bg-transparent resize-none outline-none block font-bold leading-tight"
+                      style={{
+                        color: item.color,
+                        textDecoration: item.underline ? 'underline' : 'none',
+                        fontSize: `${Math.max(11, item.fontSize * scale)}px`,
+                        lineHeight: 1.25,
+                        textDecorationThickness: '2px',
+                        width: item.width ? `${item.width * scale}px` : 'auto',
+                        minWidth: '130px',
+                        height: item.height ? `${item.height * scale}px` : 'auto',
+                      }}
+                    />
+
+                    {/* 1. Right Edge Resize Handle (Drag horizontally to resize width & wrap text) */}
+                    <div
+                      onMouseDown={(e) => handleStartResizeText(e, item, 'width')}
+                      className="absolute -right-2 top-0 bottom-0 w-4 cursor-ew-resize flex items-center justify-center group z-50 hover:bg-blue-500/20 rounded"
+                      title="向左右拖曳調整方塊寬度 (文字自動換行)"
+                    >
+                      <div className="w-1.5 h-6 bg-blue-600 rounded-full shadow-md group-hover:scale-125 transition-transform" />
+                    </div>
+
+                    {/* 2. Bottom Edge Resize Handle (Drag vertically to resize height) */}
+                    <div
+                      onMouseDown={(e) => handleStartResizeText(e, item, 'height')}
+                      className="absolute left-4 right-4 -bottom-2 h-4 cursor-ns-resize flex items-center justify-center group z-50 hover:bg-blue-500/20 rounded"
+                      title="向下拖曳調整方塊高度"
+                    >
+                      <div className="h-1.5 w-6 bg-blue-600 rounded-full shadow-md group-hover:scale-125 transition-transform" />
+                    </div>
+
+                    {/* 3. Bottom-Right Corner Resize Handle (Drag diagonally to scale width & font size) */}
+                    <div
+                      onMouseDown={(e) => handleStartResizeText(e, item, 'corner')}
+                      className="absolute -bottom-2.5 -right-2.5 w-5 h-5 bg-blue-600 border-2 border-white rounded-full cursor-nwse-resize shadow-lg flex items-center justify-center hover:scale-125 active:scale-110 transition-transform z-50"
+                      title="拖曳右下角調整方塊大小與文字縮放"
+                    >
+                      <div className="w-1.5 h-1.5 bg-white rounded-full" />
+                    </div>
                   </div>
                 </div>
               );

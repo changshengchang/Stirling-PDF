@@ -511,6 +511,55 @@ export const ToolWorkspace: React.FC<ToolWorkspaceProps> = ({ tool, onBack }) =>
             borderWidth: thickness,
             opacity,
           });
+        } else if (markup.type === 'mask') {
+          // 100% 不透光方形隱私遮罩圖層（塗黑 / 白底 / 灰色）
+          page.drawRectangle({
+            x: markup.x,
+            y: markup.y,
+            width,
+            height,
+            color: pdfColor,
+            opacity: 1.0,
+          });
+        } else if (markup.type === 'mosaic') {
+          // 馬賽克隱私遮罩（像素方格陣列徹底遮蔽個資與敏感文字）
+          const pixelSize = 5;
+          const cols = Math.ceil(width / pixelSize);
+          const rows = Math.ceil(height / pixelSize);
+          const mosaicTones = [
+            rgb(0.78, 0.82, 0.87),
+            rgb(0.55, 0.62, 0.70),
+            rgb(0.88, 0.91, 0.94),
+            rgb(0.40, 0.46, 0.54),
+          ];
+          for (let r = 0; r < rows; r++) {
+            for (let c = 0; c < cols; c++) {
+              const blockX = markup.x + c * pixelSize;
+              const blockY = markup.y + r * pixelSize;
+              const blockW = Math.min(pixelSize, markup.x + width - blockX);
+              const blockH = Math.min(pixelSize, markup.y + height - blockY);
+              if (blockW > 0 && blockH > 0) {
+                const toneIdx = (c * 7 + r * 13) % mosaicTones.length;
+                page.drawRectangle({
+                  x: blockX,
+                  y: blockY,
+                  width: blockW,
+                  height: blockH,
+                  color: mosaicTones[toneIdx],
+                  opacity: 1.0,
+                });
+              }
+            }
+          }
+          page.drawRectangle({
+            x: markup.x,
+            y: markup.y,
+            width,
+            height,
+            borderColor: rgb(0.4, 0.46, 0.54),
+            borderWidth: 0.5,
+            opacity: 0.8,
+          });
         }
       }
 
@@ -562,7 +611,32 @@ export const ToolWorkspace: React.FC<ToolWorkspaceProps> = ({ tool, onBack }) =>
         const itemColor = rgb(rgbColor.r, rgbColor.g, rgbColor.b);
         const itemFontSize = Math.max(6, Math.min(120, item.fontSize || 16));
         const itemUnderline = item.underline;
-        const lines = item.text.split(/\r?\n/);
+        const itemBoxWidth = item.width && item.width > 20 ? item.width : undefined;
+        let lines: string[] = [];
+        const rawLines = item.text.split(/\r?\n/);
+
+        if (itemBoxWidth) {
+          for (const rawLine of rawLines) {
+            if (!rawLine) {
+              lines.push('');
+              continue;
+            }
+            let cur = '';
+            for (const ch of rawLine) {
+              const test = cur + ch;
+              if (cur.length > 0 && itemFont.widthOfTextAtSize(test, itemFontSize) > itemBoxWidth) {
+                lines.push(cur);
+                cur = ch;
+              } else {
+                cur = test;
+              }
+            }
+            if (cur) lines.push(cur);
+          }
+        } else {
+          lines = rawLines;
+        }
+
         const lineHeight = itemFontSize * 1.35;
 
         const targetPageStr = (item.page || '1').toString().trim();
@@ -1186,6 +1260,11 @@ export const ToolWorkspace: React.FC<ToolWorkspaceProps> = ({ tool, onBack }) =>
                       onDeleteTextItem={handleDeleteTextGroup}
                       markups={markups}
                       onAddMarkup={(m) => setMarkups((prev) => [...prev, m])}
+                      onUpdateMarkup={(id, updates) =>
+                        setMarkups((prev) =>
+                          prev.map((m) => (m.id === id ? { ...m, ...updates } : m))
+                        )
+                      }
                       onDeleteMarkup={(id) => setMarkups((prev) => prev.filter((m) => m.id !== id))}
                       pastedImages={pastedImages}
                       onAddImage={(img) => setPastedImages((prev) => [...prev, img])}
@@ -1239,7 +1318,7 @@ export const ToolWorkspace: React.FC<ToolWorkspaceProps> = ({ tool, onBack }) =>
                   }`}
                 >
                   <Highlighter className="w-3.5 h-3.5" />
-                  <span>原文劃線與塗色註記 ({markups.length})</span>
+                  <span>原文標記與隱私遮罩 ({markups.length})</span>
                 </button>
 
                 <button
@@ -1525,25 +1604,25 @@ export const ToolWorkspace: React.FC<ToolWorkspaceProps> = ({ tool, onBack }) =>
                     <div className="flex items-center justify-between mb-2">
                       <h4 className="text-xs font-semibold text-neutral-700 flex items-center space-x-1.5">
                         <Highlighter className="w-4 h-4 text-yellow-500" />
-                        <span>已加入之原文劃線與塗色標記 ({markups.length})</span>
+                        <span>已加入之原文標記與隱私遮罩 ({markups.length})</span>
                       </h4>
                       {markups.length > 0 && (
                         <button
                           type="button"
                           onClick={() => setMarkups([])}
-                          className="text-xs text-red-600 hover:text-red-700 font-medium underline"
+                          className="text-xs text-red-600 hover:text-red-700 font-medium underline cursor-pointer"
                         >
                           清除所有標記
                         </button>
                       )}
                     </div>
                     <p className="text-xs text-neutral-500 mb-3">
-                      💡 提示：您可直接在上方「PDF 頁面可視化編輯器」的工具列點選「螢光筆劃線」、「底線」、「刪除線」或「方框」，接著在 PDF 原文處按住滑鼠左鍵拖曳，即可快速塗色標記！
+                      💡 提示：您可直接在上方「PDF 頁面可視化編輯器」的工具列點選「🛡️ 馬賽克遮罩」、「⬛ 方形遮罩圖層」、「🖍️ 螢光筆劃線」、「📏 原文劃底線」或「🔲 方框」，接著在 PDF 上按住滑鼠左鍵拖曳，即可快速套用！標記與遮罩皆可隨意拖曳移動位置與調整大小。
                     </p>
 
                     {markups.length === 0 ? (
                       <div className="py-6 text-center text-xs text-neutral-400 border border-dashed border-neutral-200 rounded-lg">
-                        尚未加入任何劃線或塗色標記，請在上方頁面檢視器中拖曳選取。
+                        尚未加入任何標記或遮罩，請在上方頁面檢視器中拖曳選取。
                       </div>
                     ) : (
                       <div className="max-h-48 overflow-y-auto space-y-2 pr-1">
@@ -1555,7 +1634,7 @@ export const ToolWorkspace: React.FC<ToolWorkspaceProps> = ({ tool, onBack }) =>
                             <div className="flex items-center space-x-2">
                               <span
                                 className="w-3.5 h-3.5 rounded-sm inline-block border border-neutral-300"
-                                style={{ backgroundColor: m.color }}
+                                style={{ backgroundColor: m.type === 'mosaic' ? '#64748b' : m.color }}
                               />
                               <span className="font-semibold text-neutral-800">
                                 #{index + 1}{' '}
@@ -1565,17 +1644,21 @@ export const ToolWorkspace: React.FC<ToolWorkspaceProps> = ({ tool, onBack }) =>
                                   ? '原文劃底線'
                                   : m.type === 'strike'
                                   ? '原文刪除線'
+                                  : m.type === 'mosaic'
+                                  ? '🛡️ 馬賽克隱私遮罩'
+                                  : m.type === 'mask'
+                                  ? '⬛ 方形遮罩圖層'
                                   : '原文方框'}
                               </span>
                               <span className="text-neutral-500">
-                                第 {m.page} 頁 | 寬度: {Math.round(m.width)}pt
+                                第 {m.page} 頁 | 寬度: {Math.round(m.width)}pt × 高度: {Math.round(m.height)}pt
                               </span>
                             </div>
                             <button
                               type="button"
                               onClick={() => setMarkups((prev) => prev.filter((x) => x.id !== m.id))}
-                              className="text-neutral-400 hover:text-red-600 p-1"
-                              title="刪除此標記"
+                              className="text-neutral-400 hover:text-red-600 p-1 cursor-pointer"
+                              title="刪除此標記/遮罩"
                             >
                               <Trash2 className="w-3.5 h-3.5" />
                             </button>

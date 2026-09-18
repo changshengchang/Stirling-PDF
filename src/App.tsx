@@ -51,15 +51,15 @@ export const App: React.FC = () => {
             <div className="mb-8 p-4 bg-white rounded-xl border border-neutral-200 shadow-xs flex flex-wrap items-center justify-between gap-4 text-xs text-neutral-600">
               <div className="flex items-center space-x-2">
                 <Lock className="w-4 h-4 text-green-600" />
-                <span className="font-medium text-neutral-800">100% Local & Private Processing</span>
+                <span className="font-medium text-neutral-800">100% 本地安全處理，隱私無虞</span>
               </div>
               <div className="flex items-center space-x-2">
                 <Zap className="w-4 h-4 text-amber-500" />
-                <span className="font-medium text-neutral-800">In-Memory Engine & Fast API</span>
+                <span className="font-medium text-neutral-800">高速即時處理引擎</span>
               </div>
               <div className="flex items-center space-x-2">
                 <Shield className="w-4 h-4 text-red-600" />
-                <span className="font-medium text-neutral-800">No Document Data Leaves Your Environment</span>
+                <span className="font-medium text-neutral-800">文件不外洩，安全有保障</span>
               </div>
             </div>
 
@@ -67,10 +67,16 @@ export const App: React.FC = () => {
             <div className="flex items-center justify-between mb-6">
               <div>
                 <h1 className="text-xl font-bold text-neutral-900 tracking-tight">
-                  {activeCategory === 'all' ? 'All PDF Tools' : `${activeCategory.toUpperCase()} Tools`}
+                  {activeCategory === 'all'
+                    ? '全部 PDF 工具'
+                    : activeCategory === 'general'
+                    ? '常用工具'
+                    : activeCategory === 'security'
+                    ? '安全保密工具'
+                    : '實用工具'}
                 </h1>
                 <p className="text-xs text-neutral-500 mt-0.5">
-                  Showing {filteredTools.length} available operations
+                  共提供 {filteredTools.length} 項功能
                 </p>
               </div>
             </div>
@@ -89,8 +95,8 @@ export const App: React.FC = () => {
             ) : (
               <div className="text-center py-16 bg-white rounded-xl border border-dashed border-neutral-300">
                 <FileText className="w-10 h-10 text-neutral-400 mx-auto mb-2" />
-                <p className="text-sm font-semibold text-neutral-700">No tools found</p>
-                <p className="text-xs text-neutral-500 mt-1">Try searching for something else like "split" or "merge"</p>
+                <p className="text-sm font-semibold text-neutral-700">找不到符合的工具</p>
+                <p className="text-xs text-neutral-500 mt-1">請嘗試搜尋其他關鍵字，例如「文字」、「合併」或「旋轉」</p>
               </div>
             )}
           </div>
@@ -100,11 +106,9 @@ export const App: React.FC = () => {
       <footer className="border-t border-neutral-200 bg-white py-6 mt-12 text-center text-xs text-neutral-500">
         <div className="max-w-7xl mx-auto px-4 flex flex-col sm:flex-row items-center justify-between gap-2">
           <div className="flex items-center space-x-2">
-            <span className="font-semibold text-neutral-800">Stirling PDF</span>
-            <span>•</span>
-            <span>Open-Source PDF Suite</span>
+            <span className="font-semibold text-neutral-800">PDF自行設計線上編輯</span>
           </div>
-          <p>Local document manipulation without external tracking or storage.</p>
+          <p>直接線上設計與處理 PDF 文件，無外部追蹤或儲存。</p>
         </div>
       </footer>
     </div>
