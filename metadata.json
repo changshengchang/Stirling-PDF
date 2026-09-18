@@ -1,0 +1,6 @@
+{
+  "name": "Stirling PDF",
+  "description": "Powerful open-source PDF manipulation tool to merge, split, rotate, watermark, compress, encrypt, and convert PDFs.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

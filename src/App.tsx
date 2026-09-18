@@ -1,0 +1,114 @@
+import React, { useState, useMemo } from 'react';
+import { Header } from './components/Header';
+import { ToolCard } from './components/ToolCard';
+import { ToolWorkspace } from './components/ToolWorkspace';
+import { ApiExplorer } from './components/ApiExplorer';
+import { TOOLS } from './data/tools';
+import { PdfTool, ToolCategory } from './types';
+import { FileText, Shield, Zap, Lock } from 'lucide-react';
+
+export const App: React.FC = () => {
+  const [activeCategory, setActiveCategory] = useState<ToolCategory>('all');
+  const [searchQuery, setSearchQuery] = useState('');
+  const [selectedTool, setSelectedTool] = useState<PdfTool | null>(null);
+  const [activeView, setActiveView] = useState<'tools' | 'api'>('tools');
+
+  const filteredTools = useMemo(() => {
+    return TOOLS.filter((tool) => {
+      const matchesCategory = activeCategory === 'all' || tool.category === activeCategory;
+      const matchesSearch =
+        tool.name.toLowerCase().includes(searchQuery.toLowerCase()) ||
+        tool.description.toLowerCase().includes(searchQuery.toLowerCase());
+      return matchesCategory && matchesSearch;
+    });
+  }, [activeCategory, searchQuery]);
+
+  return (
+    <div className="min-h-screen bg-neutral-50 flex flex-col font-sans">
+      <Header
+        activeCategory={activeCategory}
+        onSelectCategory={(cat) => {
+          setActiveCategory(cat);
+          setSelectedTool(null);
+        }}
+        searchQuery={searchQuery}
+        onSearchChange={setSearchQuery}
+        activeView={activeView}
+        onViewChange={(view) => {
+          setActiveView(view);
+          setSelectedTool(null);
+        }}
+      />
+
+      <main className="flex-1">
+        {activeView === 'api' ? (
+          <ApiExplorer />
+        ) : selectedTool ? (
+          <ToolWorkspace tool={selectedTool} onBack={() => setSelectedTool(null)} />
+        ) : (
+          <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
+            {/* Feature Highlights bar */}
+            <div className="mb-8 p-4 bg-white rounded-xl border border-neutral-200 shadow-xs flex flex-wrap items-center justify-between gap-4 text-xs text-neutral-600">
+              <div className="flex items-center space-x-2">
+                <Lock className="w-4 h-4 text-green-600" />
+                <span className="font-medium text-neutral-800">100% Local & Private Processing</span>
+              </div>
+              <div className="flex items-center space-x-2">
+                <Zap className="w-4 h-4 text-amber-500" />
+                <span className="font-medium text-neutral-800">In-Memory Engine & Fast API</span>
+              </div>
+              <div className="flex items-center space-x-2">
+                <Shield className="w-4 h-4 text-red-600" />
+                <span className="font-medium text-neutral-800">No Document Data Leaves Your Environment</span>
+              </div>
+            </div>
+
+            {/* Tools Grid Header */}
+            <div className="flex items-center justify-between mb-6">
+              <div>
+                <h1 className="text-xl font-bold text-neutral-900 tracking-tight">
+                  {activeCategory === 'all' ? 'All PDF Tools' : `${activeCategory.toUpperCase()} Tools`}
+                </h1>
+                <p className="text-xs text-neutral-500 mt-0.5">
+                  Showing {filteredTools.length} available operations
+                </p>
+              </div>
+            </div>
+
+            {/* Tools Grid */}
+            {filteredTools.length > 0 ? (
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-5">
+                {filteredTools.map((tool) => (
+                  <ToolCard
+                    key={tool.id}
+                    tool={tool}
+                    onSelect={(t) => setSelectedTool(t)}
+                  />
+                ))}
+              </div>
+            ) : (
+              <div className="text-center py-16 bg-white rounded-xl border border-dashed border-neutral-300">
+                <FileText className="w-10 h-10 text-neutral-400 mx-auto mb-2" />
+                <p className="text-sm font-semibold text-neutral-700">No tools found</p>
+                <p className="text-xs text-neutral-500 mt-1">Try searching for something else like "split" or "merge"</p>
+              </div>
+            )}
+          </div>
+        )}
+      </main>
+
+      <footer className="border-t border-neutral-200 bg-white py-6 mt-12 text-center text-xs text-neutral-500">
+        <div className="max-w-7xl mx-auto px-4 flex flex-col sm:flex-row items-center justify-between gap-2">
+          <div className="flex items-center space-x-2">
+            <span className="font-semibold text-neutral-800">Stirling PDF</span>
+            <span>•</span>
+            <span>Open-Source PDF Suite</span>
+          </div>
+          <p>Local document manipulation without external tracking or storage.</p>
+        </div>
+      </footer>
+    </div>
+  );
+};
+
+export default App;
