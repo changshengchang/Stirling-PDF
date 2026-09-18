@@ -1,5 +1,5 @@
 import React from 'react';
-import { Layers, Scissors, RotateCw, Hash, Stamp, Minimize2, FileSearch, ArrowRight } from 'lucide-react';
+import { Layers, Scissors, RotateCw, Hash, Stamp, Minimize2, FileSearch, ArrowRight, Type } from 'lucide-react';
 import { PdfTool } from '../types';
 
 interface ToolCardProps {
@@ -15,6 +15,8 @@ export const ToolCard: React.FC<ToolCardProps> = ({ tool, onSelect }) => {
         return <Layers {...props} />;
       case 'Scissors':
         return <Scissors {...props} />;
+      case 'Type':
+        return <Type {...props} />;
       case 'RotateCw':
         return <RotateCw {...props} />;
       case 'Hash':

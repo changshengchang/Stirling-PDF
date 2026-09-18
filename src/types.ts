@@ -22,3 +22,42 @@ export interface PdfMetadata {
   pageCount: number;
   fileSize: number;
 }
+
+export interface TextAnnotationItem {
+  id: string;
+  text: string;
+  color: string;
+  fontSize: number;
+  underline: boolean;
+  page: number; // 1-based page number
+  x: number;    // PDF pt from left
+  y: number;    // PDF pt from bottom
+  position?: string;
+}
+
+export type MarkupType = 'highlight' | 'underline' | 'strike' | 'rectangle';
+
+export interface MarkupAnnotationItem {
+  id: string;
+  type: MarkupType;
+  page: number;     // 1-based page number
+  x: number;        // PDF pt from left
+  y: number;        // PDF pt from bottom
+  width: number;    // PDF pt
+  height: number;   // PDF pt
+  color: string;    // HEX color
+  opacity: number;  // 0-1
+  strokeWidth?: number;
+}
+
+export interface PastedImageItem {
+  id: string;
+  name?: string;
+  dataUrl: string;  // PNG data URL
+  page: number;     // 1-based page number
+  x: number;        // PDF pt from left
+  y: number;        // PDF pt from bottom
+  width: number;    // PDF pt
+  height: number;   // PDF pt
+}
+

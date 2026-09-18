@@ -2,6 +2,8 @@ import express from 'express';
 import path from 'path';
 import cors from 'cors';
 import multer from 'multer';
+import fs from 'fs';
+import fontkit from '@pdf-lib/fontkit';
 import { PDFDocument, degrees, rgb, StandardFonts } from 'pdf-lib';
 import { createServer as createViteServer } from 'vite';
 
@@ -242,6 +244,360 @@ async function startServer() {
     }
   });
 
+  // Custom fontkit wrapper to safely handle TrueType Collection (.ttc) files like wqy-zenhei.ttc
+  const customFontkit: any = {
+    ...fontkit,
+    create: (buf: any, postscriptName?: string) => {
+      const res = (fontkit as any).create(buf, postscriptName);
+      if (res && res.fonts && res.fonts.length > 0) {
+        return res.fonts[0];
+      }
+      return res;
+    },
+  };
+
+  let cjkFontBuffer: Buffer | null = null;
+  const CJK_FONT_PATH = '/usr/share/fonts/truetype/wqy/wqy-zenhei.ttc';
+  try {
+    if (fs.existsSync(CJK_FONT_PATH)) {
+      cjkFontBuffer = fs.readFileSync(CJK_FONT_PATH);
+      console.log('Loaded system CJK font from:', CJK_FONT_PATH, 'size:', cjkFontBuffer.length);
+    }
+  } catch (e) {
+    console.warn('Could not preload CJK font:', e);
+  }
+
+  // Helper to embed appropriate font (supporting Traditional/Simplified Chinese, Japanese, and Latin)
+  async function getAppropriateFont(pdfDoc: PDFDocument, text: string, preferBold: boolean = true) {
+    const hasNonAscii = /[^\u0000-\u007F]/.test(text);
+    if (cjkFontBuffer && hasNonAscii) {
+      pdfDoc.registerFontkit(customFontkit);
+      return await pdfDoc.embedFont(cjkFontBuffer, { subset: true });
+    }
+    try {
+      return await pdfDoc.embedFont(preferBold ? StandardFonts.HelveticaBold : StandardFonts.Helvetica);
+    } catch (e) {
+      if (cjkFontBuffer) {
+        pdfDoc.registerFontkit(customFontkit);
+        return await pdfDoc.embedFont(cjkFontBuffer, { subset: true });
+      }
+      throw e;
+    }
+  }
+
+  // Endpoint to serve CJK font to client for browser-side rendering if needed
+  app.get('/api/v1/fonts/cjk', (req, res) => {
+    if (cjkFontBuffer) {
+      res.setHeader('Content-Type', 'font/collection');
+      res.setHeader('Cache-Control', 'public, max-age=86400');
+      res.send(cjkFontBuffer);
+    } else {
+      res.status(404).json({ error: 'CJK font not available' });
+    }
+  });
+
+  // Helper to convert HEX colors (e.g. #dc2626 or #333) to PDF RGB ratios (0-1)
+  function hexToRgb(hex: string): { r: number; g: number; b: number } {
+    let clean = hex.replace('#', '').trim();
+    if (clean.length === 3) {
+      clean = clean.split('').map((c) => c + c).join('');
+    }
+    const num = parseInt(clean, 16);
+    if (isNaN(num) || clean.length !== 6) {
+      return { r: 0, g: 0, b: 0 };
+    }
+    return {
+      r: ((num >> 16) & 255) / 255,
+      g: ((num >> 8) & 255) / 255,
+      b: (num & 255) / 255,
+    };
+  }
+
+  // Tool: Add Text, Markups & Pasted Images (/api/v1/general/add-text)
+  app.post('/api/v1/general/add-text', upload.single('fileInput') as any, async (req, res) => {
+    try {
+      if (!req.file) {
+        return res.status(400).json({ error: 'No file provided' });
+      }
+
+      // Parse multi-text items, markups, and pasted images if sent
+      let textItems: any[] = [];
+      if (req.body.textItems) {
+        try {
+          textItems = JSON.parse(req.body.textItems);
+        } catch (e) {
+          textItems = [];
+        }
+      }
+
+      // If textItems is empty, fallback to single legacy text parameters
+      if (textItems.length === 0) {
+        const text = (req.body.text || req.body.customText || '').toString();
+        if (text.trim()) {
+          const colorHex = (req.body.color || req.body.textColor || '#000000').toString();
+          const isUnderline = req.body.underline === true || req.body.underline === 'true' || req.body.underline === '1';
+          const fontSize = Math.max(6, Math.min(120, parseInt(req.body.fontSize || '16', 10)));
+          const position = (req.body.position || 'custom').toString();
+          const targetPageStr = (req.body.targetPages || req.body.pages || req.body.page || '1').toString().trim();
+          const customX = parseFloat(req.body.x || '50');
+          const customY = parseFloat(req.body.y || '50');
+          textItems.push({
+            id: 'default',
+            text,
+            color: colorHex,
+            underline: isUnderline,
+            fontSize,
+            position,
+            page: targetPageStr === 'all' ? 'all' : parseInt(targetPageStr, 10) || 1,
+            x: customX,
+            y: customY,
+          });
+        }
+      }
+
+      let markups: any[] = [];
+      if (req.body.markups) {
+        try {
+          markups = JSON.parse(req.body.markups);
+        } catch (e) {
+          markups = [];
+        }
+      }
+
+      let images: any[] = [];
+      if (req.body.images) {
+        try {
+          images = JSON.parse(req.body.images);
+        } catch (e) {
+          images = [];
+        }
+      }
+
+      if (textItems.length === 0 && markups.length === 0 && images.length === 0) {
+        return res.status(400).json({ error: '請提供新增文字、劃線標記或貼上圖片內容。' });
+      }
+
+      const uint8 = new Uint8Array(req.file.buffer.buffer, req.file.buffer.byteOffset, req.file.buffer.byteLength);
+      const pdfDoc = await PDFDocument.load(uint8, {
+        ignoreEncryption: true,
+        throwOnInvalidObject: false,
+        capNumbers: true,
+      });
+
+      const pages = pdfDoc.getPages();
+      const totalPages = pages.length;
+
+      // 1. Draw Markups (螢光筆塗色標記、原文劃底線、刪除線、方框註記)
+      for (const markup of markups) {
+        const pageIdx = (parseInt(markup.page, 10) || 1) - 1;
+        if (pageIdx < 0 || pageIdx >= totalPages) continue;
+
+        const page = pages[pageIdx];
+        const rgbColor = hexToRgb(markup.color || '#facc15');
+        const pdfColor = rgb(rgbColor.r, rgbColor.g, rgbColor.b);
+        const opacity = typeof markup.opacity === 'number' ? markup.opacity : (markup.type === 'highlight' ? 0.35 : 0.9);
+        const thickness = markup.strokeWidth || 2;
+        const width = Math.max(2, markup.width || 10);
+        const height = Math.max(2, markup.height || 10);
+
+        if (markup.type === 'highlight') {
+          page.drawRectangle({
+            x: markup.x,
+            y: markup.y,
+            width,
+            height,
+            color: pdfColor,
+            opacity,
+          });
+        } else if (markup.type === 'underline') {
+          page.drawLine({
+            start: { x: markup.x, y: markup.y },
+            end: { x: markup.x + width, y: markup.y },
+            thickness,
+            color: pdfColor,
+            opacity,
+          });
+        } else if (markup.type === 'strike') {
+          page.drawLine({
+            start: { x: markup.x, y: markup.y + height / 2 },
+            end: { x: markup.x + width, y: markup.y + height / 2 },
+            thickness,
+            color: pdfColor,
+            opacity,
+          });
+        } else if (markup.type === 'rectangle') {
+          page.drawRectangle({
+            x: markup.x,
+            y: markup.y,
+            width,
+            height,
+            borderColor: pdfColor,
+            borderWidth: thickness,
+            opacity,
+          });
+        }
+      }
+
+      // 2. Draw Pasted Screenshots & Images (插入截圖與貼上圖片)
+      for (const img of images) {
+        if (!img.dataUrl) continue;
+        const pageIdx = (parseInt(img.page, 10) || 1) - 1;
+        if (pageIdx < 0 || pageIdx >= totalPages) continue;
+
+        const page = pages[pageIdx];
+        const base64Data = img.dataUrl.includes('base64,') ? img.dataUrl.split('base64,')[1] : img.dataUrl;
+        const imgBuffer = Buffer.from(base64Data, 'base64');
+
+        let embeddedImage: any = null;
+        try {
+          if (img.dataUrl.includes('image/png') || !img.dataUrl.includes('image/jp')) {
+            embeddedImage = await pdfDoc.embedPng(imgBuffer);
+          } else {
+            embeddedImage = await pdfDoc.embedJpg(imgBuffer);
+          }
+        } catch (e1) {
+          try {
+            embeddedImage = await pdfDoc.embedJpg(imgBuffer);
+          } catch (e2) {
+            console.warn('Could not embed image:', e1, e2);
+          }
+        }
+
+        if (embeddedImage) {
+          page.drawImage(embeddedImage, {
+            x: img.x,
+            y: img.y,
+            width: Math.max(10, img.width || 150),
+            height: Math.max(10, img.height || 100),
+          });
+        }
+      }
+
+      // 3. Draw Text Items (支援多組文字、中英文字型、底線、自訂位置)
+      for (const item of textItems) {
+        if (!item.text || !item.text.trim()) continue;
+
+        const itemFont = await getAppropriateFont(pdfDoc, item.text, true);
+        const itemRgb = hexToRgb(item.color || '#000000');
+        const itemColor = rgb(itemRgb.r, itemRgb.g, itemRgb.b);
+        const itemFontSize = Math.max(6, Math.min(120, parseInt(item.fontSize || '16', 10)));
+        const itemUnderline = item.underline === true || item.underline === 'true' || item.underline === '1';
+        const itemLines = item.text.split(/\r?\n/);
+        const itemLineHeight = itemFontSize * 1.35;
+
+        // Determine target pages for this text item
+        const targetPageStr = (item.page || '1').toString().trim();
+        let itemPages: number[] = [];
+        if (targetPageStr.toLowerCase() === 'all') {
+          itemPages = pages.map((_, i) => i);
+        } else {
+          const segments = targetPageStr.split(',');
+          for (const seg of segments) {
+            const trimmed = seg.trim();
+            if (trimmed.includes('-')) {
+              const [startStr, endStr] = trimmed.split('-');
+              const start = Math.max(1, parseInt(startStr, 10));
+              const end = Math.min(totalPages, parseInt(endStr, 10));
+              for (let p = start; p <= end; p++) {
+                if (!itemPages.includes(p - 1)) itemPages.push(p - 1);
+              }
+            } else {
+              const num = parseInt(trimmed, 10);
+              if (!isNaN(num) && num >= 1 && num <= totalPages) {
+                if (!itemPages.includes(num - 1)) itemPages.push(num - 1);
+              }
+            }
+          }
+        }
+        if (itemPages.length === 0) itemPages = [0];
+
+        for (const pIdx of itemPages) {
+          const page = pages[pIdx];
+          const { width, height } = page.getSize();
+
+          const lineWidths = itemLines.map((line: string) => (line.length > 0 ? itemFont.widthOfTextAtSize(line, itemFontSize) : 0));
+          const maxLineWidth = Math.max(...lineWidths, 0);
+          const totalBlockHeight = itemLines.length * itemLineHeight;
+
+          let startX = isNaN(item.x) ? 50 : item.x;
+          let startY = isNaN(item.y) ? 50 : item.y;
+
+          if (item.position && item.position !== 'custom') {
+            switch (item.position) {
+              case 'top-left':
+                startX = 50;
+                startY = height - 50;
+                break;
+              case 'top-center':
+                startX = (width - maxLineWidth) / 2;
+                startY = height - 50;
+                break;
+              case 'top-right':
+                startX = width - maxLineWidth - 50;
+                startY = height - 50;
+                break;
+              case 'center':
+                startX = (width - maxLineWidth) / 2;
+                startY = (height + totalBlockHeight) / 2 - itemFontSize;
+                break;
+              case 'bottom-left':
+                startX = 50;
+                startY = totalBlockHeight + 40;
+                break;
+              case 'bottom-center':
+                startX = (width - maxLineWidth) / 2;
+                startY = totalBlockHeight + 40;
+                break;
+              case 'bottom-right':
+                startX = width - maxLineWidth - 50;
+                startY = totalBlockHeight + 40;
+                break;
+            }
+          }
+
+          itemLines.forEach((line: string, lineIdx: number) => {
+            if (!line || line.trim().length === 0) return;
+            const curY = startY - lineIdx * itemLineHeight;
+            const curLineWidth = lineWidths[lineIdx];
+            let curX = startX;
+
+            if (item.position === 'top-center' || item.position === 'center' || item.position === 'bottom-center') {
+              curX = (width - curLineWidth) / 2;
+            } else if (item.position === 'top-right' || item.position === 'bottom-right') {
+              curX = width - curLineWidth - 50;
+            }
+
+            page.drawText(line, {
+              x: curX,
+              y: curY,
+              size: itemFontSize,
+              font: itemFont,
+              color: itemColor,
+            });
+
+            if (itemUnderline) {
+              const underlineOffset = Math.max(2, itemFontSize * 0.15);
+              const underlineThickness = Math.max(1, itemFontSize / 14);
+              page.drawLine({
+                start: { x: curX, y: curY - underlineOffset },
+                end: { x: curX + curLineWidth, y: curY - underlineOffset },
+                thickness: underlineThickness,
+                color: itemColor,
+              });
+            }
+          });
+        }
+      }
+
+      const pdfBytes = await pdfDoc.save({ useObjectStreams: false });
+      const buf = Buffer.from(pdfBytes);
+      respondWithPdf(req, res, buf, 'annotated_text.pdf', pages.length);
+    } catch (err: any) {
+      console.error('Add text error:', err);
+      res.status(500).json({ error: err.message || 'Failed to add text to PDF' });
+    }
+  });
+
   // Tool 3: Rotate PDF (/api/v1/general/rotate-pdf)
   app.post('/api/v1/general/rotate-pdf', upload.single('fileInput') as any, async (req, res) => {
     try {
@@ -290,7 +646,7 @@ async function startServer() {
         throwOnInvalidObject: false,
         capNumbers: true,
       });
-      const font = await pdfDoc.embedFont(StandardFonts.Helvetica);
+      const font = await getAppropriateFont(pdfDoc, customPrefix, false);
       const pages = pdfDoc.getPages();
       const totalPages = pages.length;
 
@@ -339,7 +695,7 @@ async function startServer() {
         throwOnInvalidObject: false,
         capNumbers: true,
       });
-      const font = await pdfDoc.embedFont(StandardFonts.HelveticaBold);
+      const font = await getAppropriateFont(pdfDoc, watermarkText, true);
       const pages = pdfDoc.getPages();
 
       pages.forEach((page) => {

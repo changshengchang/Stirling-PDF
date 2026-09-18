@@ -14,9 +14,96 @@ import {
   ArrowDown,
   ExternalLink,
   X,
+  Type,
+  Underline as UnderlineIcon,
+  Palette,
+  MousePointer,
+  Highlighter,
+  Strikethrough,
+  Square,
+  Image as ImageIcon,
+  ClipboardPaste,
+  Plus,
+  Layers,
 } from 'lucide-react';
 import { PDFDocument, degrees, rgb, StandardFonts } from 'pdf-lib';
-import { PdfTool, PdfMetadata } from '../types';
+import fontkit from '@pdf-lib/fontkit';
+import { PdfTool, PdfMetadata, TextAnnotationItem, MarkupAnnotationItem, PastedImageItem } from '../types';
+import { PdfVisualPlacement } from './PdfVisualPlacement';
+
+let cachedCjkFontBytes: Uint8Array | null = null;
+async function getClientCjkFontBytes(): Promise<Uint8Array | null> {
+  if (cachedCjkFontBytes) return cachedCjkFontBytes;
+  try {
+    const res = await fetch('/api/v1/fonts/cjk');
+    if (res.ok) {
+      const arr = await res.arrayBuffer();
+      cachedCjkFontBytes = new Uint8Array(arr);
+      return cachedCjkFontBytes;
+    }
+  } catch (e) {
+    console.warn('Failed to load CJK font from server:', e);
+  }
+  return null;
+}
+
+const customClientFontkit: any = {
+  ...fontkit,
+  create: (buf: any, postscriptName?: string) => {
+    const res = (fontkit as any).create(buf, postscriptName);
+    if (res && res.fonts && res.fonts.length > 0) {
+      return res.fonts[0];
+    }
+    return res;
+  },
+};
+
+async function getClientAppropriateFont(pdfDoc: PDFDocument, text: string, preferBold: boolean = true) {
+  const hasNonAscii = /[^\u0000-\u007F]/.test(text);
+  if (hasNonAscii) {
+    const fontBytes = await getClientCjkFontBytes();
+    if (fontBytes) {
+      pdfDoc.registerFontkit(customClientFontkit);
+      return await pdfDoc.embedFont(fontBytes, { subset: true });
+    }
+  }
+  try {
+    return await pdfDoc.embedFont(preferBold ? StandardFonts.HelveticaBold : StandardFonts.Helvetica);
+  } catch (e) {
+    const fontBytes = await getClientCjkFontBytes();
+    if (fontBytes) {
+      pdfDoc.registerFontkit(customClientFontkit);
+      return await pdfDoc.embedFont(fontBytes, { subset: true });
+    }
+    throw e;
+  }
+}
+
+// Helper to convert hex color (#rrggbb) to 0-1 RGB fractions
+const hexToRgb = (hex: string): { r: number; g: number; b: number } => {
+  let clean = hex.replace('#', '').trim();
+  if (clean.length === 3) {
+    clean = clean.split('').map((c) => c + c).join('');
+  }
+  const num = parseInt(clean, 16);
+  if (isNaN(num) || clean.length !== 6) {
+    return { r: 0, g: 0, b: 0 };
+  }
+  return {
+    r: ((num >> 16) & 255) / 255,
+    g: ((num >> 8) & 255) / 255,
+    b: (num & 255) / 255,
+  };
+};
+
+const COLOR_PRESETS = [
+  { label: 'Black', hex: '#000000', bg: 'bg-black' },
+  { label: 'Blue', hex: '#1d4ed8', bg: 'bg-blue-700' },
+  { label: 'Red', hex: '#dc2626', bg: 'bg-red-600' },
+  { label: 'Green', hex: '#15803d', bg: 'bg-green-700' },
+  { label: 'Purple', hex: '#7e22ce', bg: 'bg-purple-700' },
+  { label: 'Orange', hex: '#d97706', bg: 'bg-amber-600' },
+];
 
 interface ToolWorkspaceProps {
   tool: PdfTool;
@@ -49,6 +136,91 @@ export const ToolWorkspace: React.FC<ToolWorkspaceProps> = ({ tool, onBack }) =>
   const [watermarkText, setWatermarkText] = useState('CONFIDENTIAL');
   const [watermarkOpacity, setWatermarkOpacity] = useState('0.25');
   const [watermarkFontSize, setWatermarkFontSize] = useState('48');
+
+  // Add Text, Markups & Pasted Images tool options
+  const [textItems, setTextItems] = useState<TextAnnotationItem[]>([
+    {
+      id: 'text-1',
+      text: 'Approved & Verified',
+      color: '#dc2626',
+      fontSize: 18,
+      underline: true,
+      page: 1,
+      x: 80,
+      y: 120,
+      position: 'custom',
+    },
+  ]);
+  const [activeTextId, setActiveTextId] = useState<string>('text-1');
+  const [markups, setMarkups] = useState<MarkupAnnotationItem[]>([]);
+  const [pastedImages, setPastedImages] = useState<PastedImageItem[]>([]);
+  const [showVisualPlacement, setShowVisualPlacement] = useState<boolean>(true);
+  const [activeConfigTab, setActiveConfigTab] = useState<'text' | 'markup' | 'image'>('text');
+
+  // Active text item helper
+  const activeTextItem = textItems.find((t) => t.id === activeTextId) || textItems[0] || {
+    id: 'text-1',
+    text: '',
+    color: '#dc2626',
+    fontSize: 18,
+    underline: true,
+    page: 1,
+    x: 80,
+    y: 120,
+    position: 'custom',
+  };
+
+  const handleUpdateActiveText = (updates: Partial<TextAnnotationItem>) => {
+    setTextItems((prev) =>
+      prev.map((t) => (t.id === activeTextId ? { ...t, ...updates } : t))
+    );
+  };
+
+  const handleAddTextGroup = () => {
+    const newId = `text-${Date.now()}`;
+    const newItem: TextAnnotationItem = {
+      id: newId,
+      text: `第 ${textItems.length + 1} 組文字`,
+      color: '#1d4ed8',
+      fontSize: 16,
+      underline: false,
+      page: 1,
+      x: 80,
+      y: Math.max(30, (textItems[textItems.length - 1]?.y || 120) - 35),
+      position: 'custom',
+    };
+    setTextItems((prev) => [...prev, newItem]);
+    setActiveTextId(newId);
+  };
+
+  const handleDeleteTextGroup = (id: string) => {
+    if (textItems.length <= 1) return;
+    setTextItems((prev) => {
+      const filtered = prev.filter((t) => t.id !== id);
+      if (activeTextId === id && filtered.length > 0) {
+        setActiveTextId(filtered[0].id);
+      }
+      return filtered;
+    });
+  };
+
+  // Backwards compatibility bindings
+  const addTextInput = activeTextItem.text;
+  const setAddTextInput = (val: string) => handleUpdateActiveText({ text: val });
+  const addTextColor = activeTextItem.color;
+  const setAddTextColor = (val: string) => handleUpdateActiveText({ color: val });
+  const addTextUnderline = activeTextItem.underline;
+  const setAddTextUnderline = (val: boolean) => handleUpdateActiveText({ underline: val });
+  const addTextFontSize = activeTextItem.fontSize.toString();
+  const setAddTextFontSize = (val: string) => handleUpdateActiveText({ fontSize: parseInt(val, 10) || 16 });
+  const addTextPosition = activeTextItem.position || 'custom';
+  const setAddTextPosition = (val: string) => handleUpdateActiveText({ position: val });
+  const addTextTargetPages = activeTextItem.page.toString();
+  const setAddTextTargetPages = (val: string) => handleUpdateActiveText({ page: parseInt(val, 10) || 1 });
+  const addTextCustomX = activeTextItem.x.toString();
+  const setAddTextCustomX = (val: string) => handleUpdateActiveText({ x: parseFloat(val) || 0 });
+  const addTextCustomY = activeTextItem.y.toString();
+  const setAddTextCustomY = (val: string) => handleUpdateActiveText({ y: parseFloat(val) || 0 });
 
   const fileInputRef = useRef<HTMLInputElement>(null);
 
@@ -224,7 +396,7 @@ export const ToolWorkspace: React.FC<ToolWorkspaceProps> = ({ tool, onBack }) =>
         throwOnInvalidObject: false,
         capNumbers: true,
       });
-      const font = await pdfDoc.embedFont(StandardFonts.Helvetica);
+      const font = await getClientAppropriateFont(pdfDoc, numberPrefix, false);
       const pages = pdfDoc.getPages();
       const totalPages = pages.length;
       const start = parseInt(startingNumber, 10);
@@ -258,7 +430,7 @@ export const ToolWorkspace: React.FC<ToolWorkspaceProps> = ({ tool, onBack }) =>
         throwOnInvalidObject: false,
         capNumbers: true,
       });
-      const font = await pdfDoc.embedFont(StandardFonts.HelveticaBold);
+      const font = await getClientAppropriateFont(pdfDoc, watermarkText, true);
       const pages = pdfDoc.getPages();
       const fontSize = parseInt(watermarkFontSize, 10);
       const opacity = parseFloat(watermarkOpacity);
@@ -278,6 +450,223 @@ export const ToolWorkspace: React.FC<ToolWorkspaceProps> = ({ tool, onBack }) =>
           rotate: degrees(45),
         });
       });
+      return await pdfDoc.save({ useObjectStreams: false });
+    }
+
+    if (tool.id === 'add-text') {
+      const buffer = await files[0].arrayBuffer();
+      const pdfDoc = await PDFDocument.load(buffer, {
+        ignoreEncryption: true,
+        throwOnInvalidObject: false,
+        capNumbers: true,
+      });
+      const pages = pdfDoc.getPages();
+      const totalPages = pages.length;
+
+      // 1. Draw Markups (螢光筆塗色標記、原文劃底線、刪除線、方框)
+      for (const markup of markups) {
+        const pageIdx = (parseInt(markup.page as any, 10) || 1) - 1;
+        if (pageIdx < 0 || pageIdx >= totalPages) continue;
+
+        const page = pages[pageIdx];
+        const rgbColor = hexToRgb(markup.color || '#facc15');
+        const pdfColor = rgb(rgbColor.r, rgbColor.g, rgbColor.b);
+        const opacity = typeof markup.opacity === 'number' ? markup.opacity : (markup.type === 'highlight' ? 0.35 : 0.9);
+        const thickness = markup.strokeWidth || 2;
+        const width = Math.max(2, markup.width || 10);
+        const height = Math.max(2, markup.height || 10);
+
+        if (markup.type === 'highlight') {
+          page.drawRectangle({
+            x: markup.x,
+            y: markup.y,
+            width,
+            height,
+            color: pdfColor,
+            opacity,
+          });
+        } else if (markup.type === 'underline') {
+          page.drawLine({
+            start: { x: markup.x, y: markup.y },
+            end: { x: markup.x + width, y: markup.y },
+            thickness,
+            color: pdfColor,
+            opacity,
+          });
+        } else if (markup.type === 'strike') {
+          page.drawLine({
+            start: { x: markup.x, y: markup.y + height / 2 },
+            end: { x: markup.x + width, y: markup.y + height / 2 },
+            thickness,
+            color: pdfColor,
+            opacity,
+          });
+        } else if (markup.type === 'rectangle') {
+          page.drawRectangle({
+            x: markup.x,
+            y: markup.y,
+            width,
+            height,
+            borderColor: pdfColor,
+            borderWidth: thickness,
+            opacity,
+          });
+        }
+      }
+
+      // 2. Draw Pasted Screenshots & Images (插入截圖與貼上圖片)
+      for (const img of pastedImages) {
+        if (!img.dataUrl) continue;
+        const pageIdx = (parseInt(img.page as any, 10) || 1) - 1;
+        if (pageIdx < 0 || pageIdx >= totalPages) continue;
+        const page = pages[pageIdx];
+
+        const base64Data = img.dataUrl.includes('base64,') ? img.dataUrl.split('base64,')[1] : img.dataUrl;
+        const binaryString = atob(base64Data);
+        const imgBytes = new Uint8Array(binaryString.length);
+        for (let i = 0; i < binaryString.length; i++) {
+          imgBytes[i] = binaryString.charCodeAt(i);
+        }
+
+        let embeddedImage: any = null;
+        try {
+          if (img.dataUrl.includes('image/png') || !img.dataUrl.includes('image/jp')) {
+            embeddedImage = await pdfDoc.embedPng(imgBytes);
+          } else {
+            embeddedImage = await pdfDoc.embedJpg(imgBytes);
+          }
+        } catch (e1) {
+          try {
+            embeddedImage = await pdfDoc.embedJpg(imgBytes);
+          } catch (e2) {
+            console.warn('Could not embed client-side image:', e1, e2);
+          }
+        }
+
+        if (embeddedImage) {
+          page.drawImage(embeddedImage, {
+            x: img.x,
+            y: img.y,
+            width: Math.max(10, img.width || 150),
+            height: Math.max(10, img.height || 100),
+          });
+        }
+      }
+
+      // 3. Draw Text Items (支援多組文字、中英文字型、底線、自訂位置)
+      for (const item of textItems) {
+        if (!item.text || !item.text.trim()) continue;
+
+        const itemFont = await getClientAppropriateFont(pdfDoc, item.text, true);
+        const rgbColor = hexToRgb(item.color || '#000000');
+        const itemColor = rgb(rgbColor.r, rgbColor.g, rgbColor.b);
+        const itemFontSize = Math.max(6, Math.min(120, item.fontSize || 16));
+        const itemUnderline = item.underline;
+        const lines = item.text.split(/\r?\n/);
+        const lineHeight = itemFontSize * 1.35;
+
+        const targetPageStr = (item.page || '1').toString().trim();
+        let itemPages: number[] = [];
+        if (targetPageStr.toLowerCase() === 'all') {
+          itemPages = pages.map((_, i) => i);
+        } else {
+          const segments = targetPageStr.split(',');
+          for (const seg of segments) {
+            const trimmed = seg.trim();
+            if (trimmed.includes('-')) {
+              const [s, e] = trimmed.split('-');
+              const start = Math.max(1, parseInt(s, 10));
+              const end = Math.min(totalPages, parseInt(e, 10));
+              for (let p = start; p <= end; p++) {
+                if (!itemPages.includes(p - 1)) itemPages.push(p - 1);
+              }
+            } else {
+              const num = parseInt(trimmed, 10);
+              if (!isNaN(num) && num >= 1 && num <= totalPages) {
+                if (!itemPages.includes(num - 1)) itemPages.push(num - 1);
+              }
+            }
+          }
+        }
+        if (itemPages.length === 0) itemPages = [0];
+
+        for (const idx of itemPages) {
+          const page = pages[idx];
+          const { width, height } = page.getSize();
+          const lineWidths = lines.map((line) => (line.length > 0 ? itemFont.widthOfTextAtSize(line, itemFontSize) : 0));
+          const maxLineWidth = Math.max(...lineWidths, 0);
+          const totalBlockHeight = lines.length * lineHeight;
+
+          let startX = isNaN(item.x) ? 50 : item.x;
+          let startY = isNaN(item.y) ? 50 : item.y;
+
+          if (item.position && item.position !== 'custom') {
+            switch (item.position) {
+              case 'top-left':
+                startX = 50;
+                startY = height - 50;
+                break;
+              case 'top-center':
+                startX = (width - maxLineWidth) / 2;
+                startY = height - 50;
+                break;
+              case 'top-right':
+                startX = width - maxLineWidth - 50;
+                startY = height - 50;
+                break;
+              case 'center':
+                startX = (width - maxLineWidth) / 2;
+                startY = (height + totalBlockHeight) / 2 - itemFontSize;
+                break;
+              case 'bottom-left':
+                startX = 50;
+                startY = totalBlockHeight + 40;
+                break;
+              case 'bottom-center':
+                startX = (width - maxLineWidth) / 2;
+                startY = totalBlockHeight + 40;
+                break;
+              case 'bottom-right':
+                startX = width - maxLineWidth - 50;
+                startY = totalBlockHeight + 40;
+                break;
+            }
+          }
+
+          lines.forEach((line, lineIdx) => {
+            if (!line || line.trim().length === 0) return;
+            const curY = startY - lineIdx * lineHeight;
+            const curLineWidth = lineWidths[lineIdx];
+            let curX = startX;
+
+            if (item.position === 'top-center' || item.position === 'center' || item.position === 'bottom-center') {
+              curX = (width - curLineWidth) / 2;
+            } else if (item.position === 'top-right' || item.position === 'bottom-right') {
+              curX = width - curLineWidth - 50;
+            }
+
+            page.drawText(line, {
+              x: curX,
+              y: curY,
+              size: itemFontSize,
+              font: itemFont,
+              color: itemColor,
+            });
+
+            if (itemUnderline) {
+              const underlineOffset = Math.max(2, itemFontSize * 0.15);
+              const thickness = Math.max(1, itemFontSize / 14);
+              page.drawLine({
+                start: { x: curX, y: curY - underlineOffset },
+                end: { x: curX + curLineWidth, y: curY - underlineOffset },
+                thickness,
+                color: itemColor,
+              });
+            }
+          });
+        }
+      }
+
       return await pdfDoc.save({ useObjectStreams: false });
     }
 
@@ -347,6 +736,19 @@ export const ToolWorkspace: React.FC<ToolWorkspaceProps> = ({ tool, onBack }) =>
       formData.append('watermarkText', watermarkText);
       formData.append('opacity', watermarkOpacity);
       formData.append('fontSize', watermarkFontSize);
+    }
+    if (tool.id === 'add-text') {
+      formData.append('text', addTextInput);
+      formData.append('color', addTextColor);
+      formData.append('underline', addTextUnderline ? 'true' : 'false');
+      formData.append('fontSize', addTextFontSize);
+      formData.append('position', addTextPosition);
+      formData.append('targetPages', addTextTargetPages);
+      formData.append('x', addTextCustomX);
+      formData.append('y', addTextCustomY);
+      formData.append('textItems', JSON.stringify(textItems));
+      formData.append('markups', JSON.stringify(markups));
+      formData.append('images', JSON.stringify(pastedImages));
     }
 
     try {
@@ -736,6 +1138,557 @@ export const ToolWorkspace: React.FC<ToolWorkspaceProps> = ({ tool, onBack }) =>
                   />
                 </div>
               </div>
+            </div>
+          )}
+
+          {tool.id === 'add-text' && (
+            <div className="p-5 bg-neutral-50 rounded-xl border border-neutral-200 space-y-5">
+              {/* PDF Document Viewer for Visual Placement & Live Annotation */}
+              {files.length > 0 && (
+                <div className="space-y-2">
+                  <div className="flex items-center justify-between">
+                    <span className="text-sm font-semibold text-neutral-800 flex items-center space-x-1.5">
+                      <MousePointer className="w-4 h-4 text-red-600" />
+                      <span>PDF 頁面可視化編輯器 (多組文字 / 原文劃線塗色 / 插入截圖)</span>
+                    </span>
+                    <button
+                      type="button"
+                      onClick={() => setShowVisualPlacement((prev) => !prev)}
+                      className="text-xs font-medium text-red-600 hover:text-red-700 underline cursor-pointer"
+                    >
+                      {showVisualPlacement ? '隱藏頁面檢視器' : '展開頁面檢視器'}
+                    </button>
+                  </div>
+
+                  {showVisualPlacement && (
+                    <PdfVisualPlacement
+                      file={files[0]}
+                      textItems={textItems}
+                      activeTextId={activeTextId}
+                      onSelectActiveText={(id: string) => setActiveTextId(id)}
+                      onUpdateTextPosition={(id, x, y, page) => {
+                        setTextItems((prev) =>
+                          prev.map((t) => (t.id === id ? { ...t, x, y, page, position: 'custom' } : t))
+                        );
+                      }}
+                      onUpdateTextItem={(id, updates) => {
+                        setTextItems((prev) =>
+                          prev.map((t) => (t.id === id ? { ...t, ...updates } : t))
+                        );
+                        if (id === activeTextId) {
+                          if (updates.text !== undefined) setAddTextInput(updates.text);
+                          if (updates.color !== undefined) setAddTextColor(updates.color);
+                          if (updates.fontSize !== undefined) setAddTextFontSize(updates.fontSize.toString());
+                          if (updates.underline !== undefined) setAddTextUnderline(updates.underline);
+                        }
+                      }}
+                      onAddTextItem={handleAddTextGroup}
+                      onDeleteTextItem={handleDeleteTextGroup}
+                      markups={markups}
+                      onAddMarkup={(m) => setMarkups((prev) => [...prev, m])}
+                      onDeleteMarkup={(id) => setMarkups((prev) => prev.filter((m) => m.id !== id))}
+                      pastedImages={pastedImages}
+                      onAddImage={(img) => setPastedImages((prev) => [...prev, img])}
+                      onUpdateImage={(id, updates) =>
+                        setPastedImages((prev) =>
+                          prev.map((im) => (im.id === id ? { ...im, ...updates } : im))
+                        )
+                      }
+                      onDeleteImage={(id) => setPastedImages((prev) => prev.filter((im) => im.id !== id))}
+                      // Fallback props
+                      text={addTextInput}
+                      color={addTextColor}
+                      underline={addTextUnderline}
+                      fontSize={parseInt(addTextFontSize || '16', 10)}
+                      customX={parseFloat(addTextCustomX) || 0}
+                      customY={parseFloat(addTextCustomY) || 0}
+                      targetPageStr={addTextTargetPages}
+                      onPositionSelected={(x, y, pageNum) => {
+                        setAddTextCustomX(x.toString());
+                        setAddTextCustomY(y.toString());
+                        setAddTextPosition('custom');
+                        setAddTextTargetPages(pageNum.toString());
+                      }}
+                    />
+                  )}
+                </div>
+              )}
+
+              {/* Module Navigation Tabs */}
+              <div className="flex border-b border-neutral-200">
+                <button
+                  type="button"
+                  onClick={() => setActiveConfigTab('text')}
+                  className={`py-2.5 px-4 font-semibold text-xs flex items-center space-x-1.5 border-b-2 transition-colors cursor-pointer ${
+                    activeConfigTab === 'text'
+                      ? 'border-red-600 text-red-600 bg-white rounded-t-lg'
+                      : 'border-transparent text-neutral-500 hover:text-neutral-800'
+                  }`}
+                >
+                  <Type className="w-3.5 h-3.5" />
+                  <span>新增文字項目 ({textItems.length})</span>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => setActiveConfigTab('markup')}
+                  className={`py-2.5 px-4 font-semibold text-xs flex items-center space-x-1.5 border-b-2 transition-colors cursor-pointer ${
+                    activeConfigTab === 'markup'
+                      ? 'border-red-600 text-red-600 bg-white rounded-t-lg'
+                      : 'border-transparent text-neutral-500 hover:text-neutral-800'
+                  }`}
+                >
+                  <Highlighter className="w-3.5 h-3.5" />
+                  <span>原文劃線與塗色註記 ({markups.length})</span>
+                </button>
+
+                <button
+                  type="button"
+                  onClick={() => setActiveConfigTab('image')}
+                  className={`py-2.5 px-4 font-semibold text-xs flex items-center space-x-1.5 border-b-2 transition-colors cursor-pointer ${
+                    activeConfigTab === 'image'
+                      ? 'border-red-600 text-red-600 bg-white rounded-t-lg'
+                      : 'border-transparent text-neutral-500 hover:text-neutral-800'
+                  }`}
+                >
+                  <ImageIcon className="w-3.5 h-3.5" />
+                  <span>插入截圖與圖片 ({pastedImages.length})</span>
+                </button>
+              </div>
+
+              {/* Tab 1: Text Items Manager */}
+              {activeConfigTab === 'text' && (
+                <div className="space-y-4">
+                  {/* Multi-Text Selector & Add Button */}
+                  <div className="flex flex-wrap items-center gap-2 p-2.5 bg-white rounded-lg border border-neutral-200">
+                    <span className="text-xs font-semibold text-neutral-700 mr-1 flex items-center space-x-1">
+                      <Layers className="w-3.5 h-3.5 text-red-600" />
+                      <span>文字項目清單：</span>
+                    </span>
+                    {textItems.map((item, idx) => (
+                      <div
+                        key={item.id}
+                        className={`flex items-center space-x-1.5 px-2.5 py-1 rounded-md text-xs font-medium border transition-colors cursor-pointer ${
+                          activeTextId === item.id
+                            ? 'bg-red-50 border-red-400 text-red-700 shadow-2xs'
+                            : 'bg-neutral-50 border-neutral-200 text-neutral-700 hover:bg-neutral-100'
+                        }`}
+                        onClick={() => setActiveTextId(item.id)}
+                      >
+                        <span
+                          className="w-2 h-2 rounded-full inline-block"
+                          style={{ backgroundColor: item.color }}
+                        />
+                        <span className="max-w-24 truncate">{item.text || `組別 #${idx + 1}`}</span>
+                        {textItems.length > 1 && (
+                          <button
+                            type="button"
+                            onClick={(e) => {
+                              e.stopPropagation();
+                              handleDeleteTextGroup(item.id);
+                            }}
+                            className="text-neutral-400 hover:text-red-600 ml-1"
+                            title="刪除此組文字"
+                          >
+                            <X className="w-3 h-3" />
+                          </button>
+                        )}
+                      </div>
+                    ))}
+
+                    <button
+                      type="button"
+                      onClick={handleAddTextGroup}
+                      className="px-2.5 py-1 bg-neutral-900 hover:bg-black text-white text-xs font-semibold rounded-md flex items-center space-x-1 transition-colors cursor-pointer ml-auto"
+                    >
+                      <Plus className="w-3.5 h-3.5" />
+                      <span>新增第 {textItems.length + 1} 組文字</span>
+                    </button>
+                  </div>
+
+                  {/* Text Input */}
+                  <div>
+                    <div className="flex items-center justify-between mb-1.5">
+                      <label htmlFor="add-text-input" className="text-sm font-semibold text-neutral-800 flex items-center space-x-1.5">
+                        <Type className="w-4 h-4 text-red-600" />
+                        <span>文字內容 (目前編輯：第 {textItems.findIndex((t) => t.id === activeTextId) + 1} 組)</span>
+                      </label>
+                      <span className="text-xs text-neutral-400">支援多行換行輸入</span>
+                    </div>
+                    <textarea
+                      id="add-text-input"
+                      rows={2}
+                      value={addTextInput}
+                      onChange={(e) => setAddTextInput(e.target.value)}
+                      placeholder="輸入要新增至 PDF 的文字內容..."
+                      className="w-full px-3 py-2 bg-white border border-neutral-300 rounded-lg text-sm text-neutral-900 focus:outline-hidden focus:ring-2 focus:ring-red-500 placeholder:text-neutral-400"
+                    />
+                  </div>
+
+                  {/* Color Selection & Underline Toggle */}
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                    {/* Color Selection */}
+                    <div className="p-3 bg-white rounded-lg border border-neutral-200 space-y-2.5">
+                      <div className="flex items-center justify-between">
+                        <label htmlFor="custom-color-picker" className="text-xs font-semibold text-neutral-700 flex items-center space-x-1.5">
+                          <Palette className="w-3.5 h-3.5 text-neutral-500" />
+                          <span>文字顏色 (Text Color)</span>
+                        </label>
+                        <div className="flex items-center space-x-1.5">
+                          <span
+                            className="w-3.5 h-3.5 rounded-full border border-neutral-300 inline-block shadow-2xs"
+                            style={{ backgroundColor: addTextColor }}
+                          />
+                          <span className="text-[11px] font-mono font-medium text-neutral-600 uppercase">
+                            {addTextColor}
+                          </span>
+                        </div>
+                      </div>
+
+                      {/* Preset Colors */}
+                      <div className="flex items-center space-x-2">
+                        {COLOR_PRESETS.map((preset) => (
+                          <button
+                            key={preset.hex}
+                            type="button"
+                            onClick={() => setAddTextColor(preset.hex)}
+                            title={`${preset.label} (${preset.hex})`}
+                            className={`w-6 h-6 rounded-full border transition-transform ${preset.bg} ${
+                              addTextColor.toLowerCase() === preset.hex.toLowerCase()
+                                ? 'ring-2 ring-offset-1 ring-red-500 scale-110 border-white'
+                                : 'border-neutral-300 hover:scale-105 opacity-90'
+                            }`}
+                          />
+                        ))}
+                        
+                        {/* Custom Color Input */}
+                        <label
+                          htmlFor="custom-color-picker"
+                          title="自訂顏色 (Custom Color)"
+                          className="cursor-pointer inline-flex items-center justify-center w-6 h-6 rounded-full border border-neutral-300 bg-neutral-100 hover:bg-neutral-200 text-neutral-600 text-xs transition-colors"
+                        >
+                          +
+                          <input
+                            id="custom-color-picker"
+                            type="color"
+                            value={addTextColor}
+                            onChange={(e) => setAddTextColor(e.target.value)}
+                            className="sr-only"
+                          />
+                        </label>
+                      </div>
+                    </div>
+
+                    {/* Underline Toggle */}
+                    <div className="p-3 bg-white rounded-lg border border-neutral-200 flex flex-col justify-between">
+                      <span className="text-xs font-semibold text-neutral-700 flex items-center space-x-1.5">
+                        <UnderlineIcon className="w-3.5 h-3.5 text-neutral-500" />
+                        <span>劃底線功能 (Underline)</span>
+                      </span>
+
+                      <div className="mt-2 flex items-center">
+                        <label
+                          htmlFor="toggle-underline-checkbox"
+                          className={`w-full flex items-center justify-between px-3 py-2 rounded-md border cursor-pointer select-none transition-colors ${
+                            addTextUnderline
+                              ? 'bg-red-50 border-red-300 text-red-800'
+                              : 'bg-neutral-50 border-neutral-200 text-neutral-600 hover:bg-neutral-100'
+                          }`}
+                        >
+                          <span className="text-xs font-medium flex items-center space-x-2">
+                            <span className="underline font-semibold decoration-2">劃底線樣式 (Underline)</span>
+                          </span>
+                          <input
+                            id="toggle-underline-checkbox"
+                            type="checkbox"
+                            checked={addTextUnderline}
+                            onChange={(e) => setAddTextUnderline(e.target.checked)}
+                            className="w-4 h-4 text-red-600 rounded border-neutral-300 focus:ring-red-500 cursor-pointer"
+                          />
+                        </label>
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Font Size & Position & Target Page */}
+                  <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                    <div>
+                      <label htmlFor="add-text-fontsize" className="block text-xs font-semibold text-neutral-700 mb-1">
+                        字型大小 (Font Size: {addTextFontSize}pt)
+                      </label>
+                      <input
+                        id="add-text-fontsize"
+                        type="number"
+                        min="8"
+                        max="96"
+                        value={addTextFontSize}
+                        onChange={(e) => setAddTextFontSize(e.target.value)}
+                        className="w-full px-3 py-2 bg-white border border-neutral-300 rounded-lg text-sm text-neutral-900 focus:outline-hidden focus:ring-2 focus:ring-red-500"
+                      />
+                    </div>
+
+                    <div>
+                      <label htmlFor="add-text-position" className="block text-xs font-semibold text-neutral-700 mb-1">
+                        插入位置 (Position)
+                      </label>
+                      <select
+                        id="add-text-position"
+                        value={addTextPosition}
+                        onChange={(e) => setAddTextPosition(e.target.value)}
+                        className="w-full px-3 py-2 bg-white border border-neutral-300 rounded-lg text-sm text-neutral-900 focus:outline-hidden focus:ring-2 focus:ring-red-500"
+                      >
+                        <option value="custom">Visual Custom (可視化拖曳/自訂座標)</option>
+                        <option value="bottom-center">Bottom Center (下方置中)</option>
+                        <option value="bottom-left">Bottom Left (左下角)</option>
+                        <option value="bottom-right">Bottom Right (右下角)</option>
+                        <option value="center">Center (頁面正中)</option>
+                        <option value="top-center">Top Center (上方置中)</option>
+                        <option value="top-left">Top Left (左上角)</option>
+                        <option value="top-right">Top Right (右上角)</option>
+                      </select>
+                    </div>
+
+                    <div>
+                      <label htmlFor="add-text-target-pages" className="block text-xs font-semibold text-neutral-700 mb-1">
+                        目標頁面 (Target Page)
+                      </label>
+                      <input
+                        id="add-text-target-pages"
+                        type="text"
+                        value={addTextTargetPages}
+                        onChange={(e) => setAddTextTargetPages(e.target.value)}
+                        placeholder="e.g. all, 1, 1-3"
+                        className="w-full px-3 py-2 bg-white border border-neutral-300 rounded-lg text-sm text-neutral-900 focus:outline-hidden focus:ring-2 focus:ring-red-500"
+                      />
+                    </div>
+                  </div>
+
+                  {/* Custom Coordinates when 'custom' is selected */}
+                  {addTextPosition === 'custom' && (
+                    <div className="grid grid-cols-2 gap-3 p-3 bg-white rounded-lg border border-neutral-200">
+                      <div>
+                        <label htmlFor="custom-x-coord" className="block text-xs font-semibold text-neutral-700 mb-1">
+                          X 軸座標 (點 points，距左邊緣)
+                        </label>
+                        <input
+                          id="custom-x-coord"
+                          type="number"
+                          value={addTextCustomX}
+                          onChange={(e) => setAddTextCustomX(e.target.value)}
+                          className="w-full px-3 py-1.5 bg-neutral-50 border border-neutral-300 rounded text-sm"
+                        />
+                      </div>
+                      <div>
+                        <label htmlFor="custom-y-coord" className="block text-xs font-semibold text-neutral-700 mb-1">
+                          Y 軸座標 (點 points，距底邊緣)
+                        </label>
+                        <input
+                          id="custom-y-coord"
+                          type="number"
+                          value={addTextCustomY}
+                          onChange={(e) => setAddTextCustomY(e.target.value)}
+                          className="w-full px-3 py-1.5 bg-neutral-50 border border-neutral-300 rounded text-sm"
+                        />
+                      </div>
+                    </div>
+                  )}
+
+                  {/* Live Preview Sample Box */}
+                  <div className="p-3.5 bg-white rounded-xl border border-neutral-200 space-y-1.5">
+                    <div className="flex items-center justify-between text-[11px] font-semibold text-neutral-500 uppercase tracking-wider">
+                      <span>文字樣式即時預覽 (Live Style Preview)</span>
+                      <span>{addTextUnderline ? '底線啟用' : '無底線'}</span>
+                    </div>
+                    <div className="min-h-12 p-3 bg-neutral-50 rounded-lg border border-neutral-100 flex items-center justify-center text-center overflow-hidden">
+                      <span
+                        style={{
+                          color: addTextColor,
+                          textDecoration: addTextUnderline ? 'underline' : 'none',
+                          fontSize: `${Math.min(28, Math.max(12, parseInt(addTextFontSize || '16', 10)))}px`,
+                          fontWeight: 700,
+                          lineHeight: 1.3,
+                          textDecorationThickness: '2px',
+                        }}
+                        className="break-all"
+                      >
+                        {addTextInput || '文字預覽範例'}
+                      </span>
+                    </div>
+                  </div>
+                </div>
+              )}
+
+              {/* Tab 2: Markups List */}
+              {activeConfigTab === 'markup' && (
+                <div className="space-y-3">
+                  <div className="p-3.5 bg-white rounded-lg border border-neutral-200">
+                    <div className="flex items-center justify-between mb-2">
+                      <h4 className="text-xs font-semibold text-neutral-700 flex items-center space-x-1.5">
+                        <Highlighter className="w-4 h-4 text-yellow-500" />
+                        <span>已加入之原文劃線與塗色標記 ({markups.length})</span>
+                      </h4>
+                      {markups.length > 0 && (
+                        <button
+                          type="button"
+                          onClick={() => setMarkups([])}
+                          className="text-xs text-red-600 hover:text-red-700 font-medium underline"
+                        >
+                          清除所有標記
+                        </button>
+                      )}
+                    </div>
+                    <p className="text-xs text-neutral-500 mb-3">
+                      💡 提示：您可直接在上方「PDF 頁面可視化編輯器」的工具列點選「螢光筆劃線」、「底線」、「刪除線」或「方框」，接著在 PDF 原文處按住滑鼠左鍵拖曳，即可快速塗色標記！
+                    </p>
+
+                    {markups.length === 0 ? (
+                      <div className="py-6 text-center text-xs text-neutral-400 border border-dashed border-neutral-200 rounded-lg">
+                        尚未加入任何劃線或塗色標記，請在上方頁面檢視器中拖曳選取。
+                      </div>
+                    ) : (
+                      <div className="max-h-48 overflow-y-auto space-y-2 pr-1">
+                        {markups.map((m, index) => (
+                          <div
+                            key={m.id}
+                            className="flex items-center justify-between p-2 rounded-md bg-neutral-50 border border-neutral-200 text-xs"
+                          >
+                            <div className="flex items-center space-x-2">
+                              <span
+                                className="w-3.5 h-3.5 rounded-sm inline-block border border-neutral-300"
+                                style={{ backgroundColor: m.color }}
+                              />
+                              <span className="font-semibold text-neutral-800">
+                                #{index + 1}{' '}
+                                {m.type === 'highlight'
+                                  ? '螢光筆塗色標記'
+                                  : m.type === 'underline'
+                                  ? '原文劃底線'
+                                  : m.type === 'strike'
+                                  ? '原文刪除線'
+                                  : '原文方框'}
+                              </span>
+                              <span className="text-neutral-500">
+                                第 {m.page} 頁 | 寬度: {Math.round(m.width)}pt
+                              </span>
+                            </div>
+                            <button
+                              type="button"
+                              onClick={() => setMarkups((prev) => prev.filter((x) => x.id !== m.id))}
+                              className="text-neutral-400 hover:text-red-600 p-1"
+                              title="刪除此標記"
+                            >
+                              <Trash2 className="w-3.5 h-3.5" />
+                            </button>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                </div>
+              )}
+
+              {/* Tab 3: Pasted Screenshots & Images */}
+              {activeConfigTab === 'image' && (
+                <div className="space-y-3">
+                  <div className="p-3.5 bg-white rounded-lg border border-neutral-200">
+                    <div className="flex items-center justify-between mb-2">
+                      <h4 className="text-xs font-semibold text-neutral-700 flex items-center space-x-1.5">
+                        <ImageIcon className="w-4 h-4 text-emerald-600" />
+                        <span>已插入之截圖與圖片清單 ({pastedImages.length})</span>
+                      </h4>
+                      {pastedImages.length > 0 && (
+                        <button
+                          type="button"
+                          onClick={() => setPastedImages([])}
+                          className="text-xs text-red-600 hover:text-red-700 font-medium underline"
+                        >
+                          清除所有圖片
+                        </button>
+                      )}
+                    </div>
+                    <p className="text-xs text-neutral-500 mb-3">
+                      💡 提示：在頁面上隨時按 <kbd className="px-1.5 py-0.5 bg-neutral-100 border border-neutral-300 rounded font-mono text-[11px] text-neutral-700">Ctrl+V</kbd> 或點選下方按鈕，即可貼上螢幕截圖，並可在上方 PDF 畫面中自由拖曳移動與調整縮放大小！
+                    </p>
+
+                    <div className="flex items-center space-x-2 mb-3">
+                      <label
+                        className="px-3 py-1.5 bg-neutral-100 hover:bg-neutral-200 text-neutral-700 rounded-md text-xs font-medium border border-neutral-300 flex items-center space-x-1.5 cursor-pointer transition-colors"
+                      >
+                        <UploadCloud className="w-3.5 h-3.5 text-neutral-600" />
+                        <span>上傳截圖/圖片檔案</span>
+                        <input
+                          type="file"
+                          accept="image/*"
+                          className="sr-only"
+                          onChange={(e) => {
+                            const file = e.target.files?.[0];
+                            if (file) {
+                              const reader = new FileReader();
+                              reader.onload = (ev) => {
+                                const dataUrl = ev.target?.result as string;
+                                if (dataUrl) {
+                                  setPastedImages((prev) => [
+                                    ...prev,
+                                    {
+                                      id: `img-${Date.now()}`,
+                                      name: file.name || '截圖圖片',
+                                      dataUrl,
+                                      page: 1,
+                                      x: 80,
+                                      y: 400,
+                                      width: 220,
+                                      height: 140,
+                                    },
+                                  ]);
+                                }
+                              };
+                              reader.readAsDataURL(file);
+                            }
+                            e.target.value = '';
+                          }}
+                        />
+                      </label>
+                    </div>
+
+                    {pastedImages.length === 0 ? (
+                      <div className="py-6 text-center text-xs text-neutral-400 border border-dashed border-neutral-200 rounded-lg">
+                        尚未插入任何截圖，可按 Ctrl+V 貼上或點選按鈕上傳。
+                      </div>
+                    ) : (
+                      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 max-h-56 overflow-y-auto pr-1">
+                        {pastedImages.map((img, index) => (
+                          <div
+                            key={img.id}
+                            className="flex items-center space-x-3 p-2 rounded-md bg-neutral-50 border border-neutral-200"
+                          >
+                            <img
+                              src={img.dataUrl}
+                              alt={`截圖 #${index + 1}`}
+                              className="w-16 h-12 object-contain bg-white rounded border border-neutral-200 shrink-0"
+                            />
+                            <div className="min-w-0 flex-1 text-xs">
+                              <span className="font-semibold text-neutral-800 block truncate">
+                                截圖/圖片 #{index + 1}
+                              </span>
+                              <span className="text-neutral-500 block">
+                                第 {img.page} 頁 | 尺寸: {Math.round(img.width)}×{Math.round(img.height)}
+                              </span>
+                            </div>
+                            <button
+                              type="button"
+                              onClick={() => setPastedImages((prev) => prev.filter((x) => x.id !== img.id))}
+                              className="text-neutral-400 hover:text-red-600 p-1"
+                              title="刪除此截圖"
+                            >
+                              <Trash2 className="w-4 h-4" />
+                            </button>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                </div>
+              )}
             </div>
           )}
 

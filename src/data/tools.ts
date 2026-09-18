@@ -21,6 +21,15 @@ export const TOOLS: PdfTool[] = [
     popular: true,
   },
   {
+    id: 'add-text',
+    name: 'Add Text & Underline',
+    description: 'Insert customized text anywhere on PDF pages with color picker and underline styling.',
+    category: 'general',
+    icon: 'Type',
+    endpoint: '/api/v1/general/add-text',
+    popular: true,
+  },
+  {
     id: 'rotate',
     name: 'Rotate PDF',
     description: 'Rotate PDF pages clockwise or counter-clockwise by 90°, 180°, or 270°.',
