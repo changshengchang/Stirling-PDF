@@ -245,14 +245,19 @@ async function startServer() {
   });
 
   // Custom fontkit wrapper to safely handle TrueType (.ttf) and TrueType Collection (.ttc) files
+  const rawFontkit: any = (fontkit as any)?.default || fontkit;
   const customFontkit: any = {
-    ...fontkit,
+    ...rawFontkit,
     create: (buf: any, postscriptName?: string) => {
-      const res = (fontkit as any).create(buf, postscriptName);
-      if (res && res.fonts && res.fonts.length > 0) {
-        return res.fonts[0];
+      const fn = rawFontkit?.create || rawFontkit?.default?.create;
+      if (typeof fn === 'function') {
+        const res = fn(buf, postscriptName);
+        if (res && res.fonts && res.fonts.length > 0) {
+          return res.fonts[0];
+        }
+        return res;
       }
-      return res;
+      throw new Error('fontkit.create is not available');
     },
   };
 
@@ -285,10 +290,15 @@ async function startServer() {
       if (serverDocFontMap.has(pdfDoc)) {
         return serverDocFontMap.get(pdfDoc);
       }
-      pdfDoc.registerFontkit(customFontkit);
-      const embeddedFont = await pdfDoc.embedFont(cjkFontBuffer, { subset: true });
-      serverDocFontMap.set(pdfDoc, embeddedFont);
-      return embeddedFont;
+      try {
+        pdfDoc.registerFontkit(customFontkit);
+        const embeddedFont = await pdfDoc.embedFont(cjkFontBuffer, { subset: true });
+        serverDocFontMap.set(pdfDoc, embeddedFont);
+        return embeddedFont;
+      } catch (err: any) {
+        console.error('Failed to embed CJK font in pdfDoc:', err);
+        throw new Error(`無法將中文字型嵌入 PDF: ${err?.message || err}`);
+      }
     }
     try {
       return await pdfDoc.embedFont(preferBold ? StandardFonts.HelveticaBold : StandardFonts.Helvetica);
@@ -297,10 +307,14 @@ async function startServer() {
         if (serverDocFontMap.has(pdfDoc)) {
           return serverDocFontMap.get(pdfDoc);
         }
-        pdfDoc.registerFontkit(customFontkit);
-        const embeddedFont = await pdfDoc.embedFont(cjkFontBuffer, { subset: true });
-        serverDocFontMap.set(pdfDoc, embeddedFont);
-        return embeddedFont;
+        try {
+          pdfDoc.registerFontkit(customFontkit);
+          const embeddedFont = await pdfDoc.embedFont(cjkFontBuffer, { subset: true });
+          serverDocFontMap.set(pdfDoc, embeddedFont);
+          return embeddedFont;
+        } catch (fontErr: any) {
+          console.error('Fallback font embedding failed:', fontErr);
+        }
       }
       throw e;
     }

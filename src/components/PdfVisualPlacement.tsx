@@ -41,8 +41,9 @@ export interface PdfVisualPlacementProps {
   onSelectActiveText: (id: string) => void;
   onUpdateTextPosition: (id: string, x: number, y: number, page: number) => void;
   onUpdateTextItem?: (id: string, updates: Partial<TextAnnotationItem>) => void;
-  onAddTextItem: () => void;
+  onAddTextItem: (targetPage?: number) => void;
   onDeleteTextItem: (id: string) => void;
+  onPageChange?: (page: number) => void;
 
   markups: MarkupAnnotationItem[];
   onAddMarkup: (markup: MarkupAnnotationItem) => void;
@@ -66,13 +67,15 @@ export interface PdfVisualPlacementProps {
   onPositionSelected?: (x: number, y: number, pageNumber: number) => void;
 }
 
-const HIGHLIGHT_COLORS = [
-  { name: '螢光黃', hex: '#facc15' },
-  { name: '亮螢光綠', hex: '#4ade80' },
-  { name: '粉紅色', hex: '#f472b6' },
-  { name: '天藍色', hex: '#38bdf8' },
-  { name: '亮橘色', hex: '#fb923c' },
-  { name: '警示紅', hex: '#f87171' },
+const ANNOTATION_COLORS = [
+  { name: '極致深黑', hex: '#000000', desc: '公文正式標記、極致清晰' },
+  { name: '鮮明深紅', hex: '#b91c1c', desc: '重點警示、錯誤修正' },
+  { name: '尊爵深藍', hex: '#1d4ed8', desc: '商務批註、核定劃線' },
+  { name: '沉穩深綠', hex: '#15803d', desc: '正確核可、清晰對比' },
+  { name: '深曜濃紫', hex: '#7e22ce', desc: '重要分類、醒目標記' },
+  { name: '深焦琥珀', hex: '#c2410c', desc: '加強注意、提醒標記' },
+  { name: '高對比褐金', hex: '#b45309', desc: '高對比深黃、清晰劃線' },
+  { name: '螢光鮮黃', hex: '#ca8a04', desc: '螢光筆醒目反差' },
 ];
 
 export const PdfVisualPlacement: React.FC<PdfVisualPlacementProps> = ({
@@ -84,6 +87,7 @@ export const PdfVisualPlacement: React.FC<PdfVisualPlacementProps> = ({
   onUpdateTextItem,
   onAddTextItem,
   onDeleteTextItem,
+  onPageChange,
   markups,
   onAddMarkup,
   onDeleteMarkup,
@@ -159,6 +163,13 @@ export const PdfVisualPlacement: React.FC<PdfVisualPlacementProps> = ({
   const containerRef = useRef<HTMLDivElement | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
 
+  // Ensure the view resets to the top of the PDF whenever page or file changes so header is immediately visible
+  useEffect(() => {
+    if (containerRef.current) {
+      containerRef.current.scrollTop = 0;
+    }
+  }, [currentPage, file]);
+
   // Load PDF Document
   useEffect(() => {
     let isCancelled = false;
@@ -180,6 +191,7 @@ export const PdfVisualPlacement: React.FC<PdfVisualPlacementProps> = ({
         setPdfDoc(doc);
         setNumPages(doc.numPages);
         setCurrentPage(1);
+        onPageChange?.(1);
         setIsLoading(false);
       } catch (err: any) {
         if (isCancelled) return;
@@ -194,7 +206,19 @@ export const PdfVisualPlacement: React.FC<PdfVisualPlacementProps> = ({
     return () => {
       isCancelled = true;
     };
-  }, [file]);
+  }, [file, onPageChange]);
+
+  const handlePageChange = useCallback(
+    (newPage: number) => {
+      const clamped = Math.max(1, Math.min(numPages, newPage));
+      setCurrentPage(clamped);
+      onPageChange?.(clamped);
+      if (containerRef.current) {
+        containerRef.current.scrollTop = 0;
+      }
+    },
+    [numPages, onPageChange]
+  );
 
   // Render current page to canvas
   useEffect(() => {
@@ -233,6 +257,11 @@ export const PdfVisualPlacement: React.FC<PdfVisualPlacementProps> = ({
 
         renderTask = page.render(renderContext);
         await renderTask.promise;
+
+        // Ensure top of document is fully visible
+        if (!isCancelled && containerRef.current) {
+          containerRef.current.scrollTop = 0;
+        }
       } catch (err: any) {
         if (!isCancelled && err?.name !== 'RenderingCancelledException') {
           console.warn('Canvas render error:', err);
@@ -688,6 +717,7 @@ export const PdfVisualPlacement: React.FC<PdfVisualPlacementProps> = ({
 
   // Filter items for the current page
   const pageTextItems = textItems.filter((t) => t.page === currentPage || t.page.toString().toLowerCase() === 'all');
+  const activeTextItem = textItems.find((t) => t.id === activeTextId);
   const pageMarkups = markups.filter((m) => m.page === currentPage);
   const pageImages = images.filter((img) => img.page === currentPage);
 
@@ -758,7 +788,7 @@ export const PdfVisualPlacement: React.FC<PdfVisualPlacementProps> = ({
             type="button"
             onClick={() => {
               setToolMode('highlight');
-              setMarkupColor('#facc15');
+              setMarkupColor('#eab308');
             }}
             className={`px-2.5 py-1.5 rounded-md font-medium flex items-center space-x-1.5 transition-all cursor-pointer ${
               toolMode === 'highlight' ? 'bg-amber-500 text-neutral-950 font-bold shadow-sm' : 'bg-neutral-800 text-neutral-300 hover:bg-neutral-700'
@@ -770,9 +800,12 @@ export const PdfVisualPlacement: React.FC<PdfVisualPlacementProps> = ({
 
           <button
             type="button"
-            onClick={() => setToolMode('underline')}
+            onClick={() => {
+              setToolMode('underline');
+              setMarkupColor('#dc2626');
+            }}
             className={`px-2.5 py-1.5 rounded-md font-medium flex items-center space-x-1.5 transition-all cursor-pointer ${
-              toolMode === 'underline' ? 'bg-blue-600 text-white shadow-sm' : 'bg-neutral-800 text-neutral-300 hover:bg-neutral-700'
+              toolMode === 'underline' ? 'bg-red-600 text-white shadow-sm' : 'bg-neutral-800 text-neutral-300 hover:bg-neutral-700'
             }`}
           >
             <UnderlineIcon className="w-3.5 h-3.5" />
@@ -781,7 +814,10 @@ export const PdfVisualPlacement: React.FC<PdfVisualPlacementProps> = ({
 
           <button
             type="button"
-            onClick={() => setToolMode('strike')}
+            onClick={() => {
+              setToolMode('strike');
+              setMarkupColor('#dc2626');
+            }}
             className={`px-2.5 py-1.5 rounded-md font-medium flex items-center space-x-1.5 transition-all cursor-pointer ${
               toolMode === 'strike' ? 'bg-rose-600 text-white shadow-sm' : 'bg-neutral-800 text-neutral-300 hover:bg-neutral-700'
             }`}
@@ -792,7 +828,10 @@ export const PdfVisualPlacement: React.FC<PdfVisualPlacementProps> = ({
 
           <button
             type="button"
-            onClick={() => setToolMode('rectangle')}
+            onClick={() => {
+              setToolMode('rectangle');
+              setMarkupColor('#dc2626');
+            }}
             className={`px-2.5 py-1.5 rounded-md font-medium flex items-center space-x-1.5 transition-all cursor-pointer ${
               toolMode === 'rectangle' ? 'bg-purple-600 text-white shadow-sm' : 'bg-neutral-800 text-neutral-300 hover:bg-neutral-700'
             }`}
@@ -819,7 +858,7 @@ export const PdfVisualPlacement: React.FC<PdfVisualPlacementProps> = ({
           <div className="flex items-center bg-neutral-800 border border-neutral-700 rounded-md p-0.5">
             <button
               type="button"
-              onClick={() => setCurrentPage((p) => Math.max(1, p - 1))}
+              onClick={() => handlePageChange(currentPage - 1)}
               disabled={currentPage <= 1 || isLoading}
               className="p-1 text-neutral-300 hover:text-white disabled:opacity-30 cursor-pointer"
               title="上一頁"
@@ -831,7 +870,7 @@ export const PdfVisualPlacement: React.FC<PdfVisualPlacementProps> = ({
             </span>
             <button
               type="button"
-              onClick={() => setCurrentPage((p) => Math.min(numPages, p + 1))}
+              onClick={() => handlePageChange(currentPage + 1)}
               disabled={currentPage >= numPages || isLoading}
               className="p-1 text-neutral-300 hover:text-white disabled:opacity-30 cursor-pointer"
               title="下一頁"
@@ -890,6 +929,10 @@ export const PdfVisualPlacement: React.FC<PdfVisualPlacementProps> = ({
                     } else {
                       onSelectActiveText(item.id);
                       setEditingTextId(item.id);
+                      const targetPage = typeof item.page === 'number' ? item.page : parseInt((item as any).page, 10);
+                      if (!isNaN(targetPage) && targetPage >= 1 && targetPage !== currentPage) {
+                        handlePageChange(targetPage);
+                      }
                     }
                   }}
                   className={`px-2 py-1 rounded-md text-xs font-medium flex items-center space-x-1 transition-all cursor-pointer ${
@@ -897,11 +940,12 @@ export const PdfVisualPlacement: React.FC<PdfVisualPlacementProps> = ({
                       ? 'bg-blue-600 text-white shadow-xs font-semibold'
                       : 'bg-white border border-neutral-300 text-neutral-700 hover:bg-neutral-100'
                   }`}
-                  title={item.id === activeTextId ? '點擊完成確定' : '點擊選取編輯'}
+                  title={item.id === activeTextId ? '點擊完成確定' : `點擊選取編輯（位於第 ${item.page || 1} 頁）`}
                 >
                   <span>文字 #{idx + 1}</span>
+                  <span className="text-[10px] font-mono opacity-80">(P.{item.page || 1})</span>
                   <span
-                    className="w-2.5 h-2.5 rounded-full inline-block border border-white"
+                    className="w-2.5 h-2.5 rounded-full inline-block border border-white ml-0.5"
                     style={{ backgroundColor: item.color }}
                   />
                   {item.id === activeTextId && <Check className="w-3 h-3 ml-0.5" />}
@@ -909,12 +953,12 @@ export const PdfVisualPlacement: React.FC<PdfVisualPlacementProps> = ({
               ))}
               <button
                 type="button"
-                onClick={onAddTextItem}
-                className="px-2 py-1 bg-neutral-200 hover:bg-neutral-300 text-neutral-800 rounded-md font-medium text-xs flex items-center space-x-1 cursor-pointer"
-                title="新增另一組文字"
+                onClick={() => onAddTextItem(currentPage)}
+                className="px-2.5 py-1 bg-neutral-900 hover:bg-black text-white rounded-md font-semibold text-xs flex items-center space-x-1 cursor-pointer shadow-xs"
+                title={`在目前頁數 (第 ${currentPage} 頁) 新增文字方塊`}
               >
                 <Plus className="w-3.5 h-3.5" />
-                <span>新增文字</span>
+                <span>新增文字 (第 {currentPage} 頁)</span>
               </button>
               {activeTextId && (
                 <button
@@ -928,6 +972,43 @@ export const PdfVisualPlacement: React.FC<PdfVisualPlacementProps> = ({
                 </button>
               )}
             </div>
+
+            {activeTextItem && onUpdateTextItem && (
+              <div className="flex items-center space-x-1.5 bg-white px-2 py-1 rounded-md border border-neutral-200">
+                <span className="font-semibold text-neutral-800 text-xs">文字顏色：</span>
+                {ANNOTATION_COLORS.map((c) => (
+                  <button
+                    key={c.hex}
+                    type="button"
+                    onClick={() => {
+                      onUpdateTextItem(activeTextId, { color: c.hex });
+                    }}
+                    title={`${c.name} (${c.desc})`}
+                    className={`w-4.5 h-4.5 rounded-full border transition-transform cursor-pointer ${
+                      (activeTextItem.color || '#dc2626').toLowerCase() === c.hex.toLowerCase()
+                        ? 'scale-125 ring-2 ring-neutral-900 border-white shadow-xs'
+                        : 'border-neutral-300 hover:scale-110'
+                    }`}
+                    style={{ backgroundColor: c.hex }}
+                  />
+                ))}
+                <label
+                  className="flex items-center space-x-1 cursor-pointer text-xs text-neutral-700 bg-neutral-50 border border-neutral-300 rounded px-1.5 py-0.5 hover:bg-neutral-100 ml-0.5"
+                  title="自訂文字顏色"
+                >
+                  <span className="text-[11px] font-medium">自訂：</span>
+                  <input
+                    type="color"
+                    value={activeTextItem.color || '#dc2626'}
+                    onChange={(e) => {
+                      onUpdateTextItem(activeTextId, { color: e.target.value });
+                    }}
+                    className="w-4 h-4 rounded cursor-pointer border-0 p-0"
+                  />
+                </label>
+              </div>
+            )}
+
             <span className="text-[11px] text-blue-700 bg-blue-50 px-2 py-0.5 rounded border border-blue-200 font-medium">
               💡 提示：按住文字頂部可「拖曳移動」，拖曳右側或右下角可「調整方塊大小」，點擊「完成」即可確認固定！
             </span>
@@ -1032,21 +1113,33 @@ export const PdfVisualPlacement: React.FC<PdfVisualPlacementProps> = ({
         {(toolMode === 'highlight' || toolMode === 'underline' || toolMode === 'strike' || toolMode === 'rectangle') && (
           <div className="flex items-center flex-wrap gap-3">
             <div className="flex items-center space-x-1.5">
-              <span className="font-semibold text-neutral-700">顏色：</span>
-              {HIGHLIGHT_COLORS.map((c) => (
+              <span className="font-semibold text-neutral-800">標記顏色（深色鮮明）：</span>
+              {ANNOTATION_COLORS.map((c) => (
                 <button
                   key={c.hex}
                   type="button"
                   onClick={() => setMarkupColor(c.hex)}
-                  title={c.name}
+                  title={`${c.name} (${c.desc})`}
                   className={`w-5 h-5 rounded-full border transition-transform cursor-pointer ${
                     markupColor.toLowerCase() === c.hex.toLowerCase()
-                      ? 'scale-125 ring-2 ring-neutral-800 border-white'
-                      : 'border-neutral-300 hover:scale-110'
+                      ? 'scale-125 ring-2 ring-neutral-900 border-white shadow-xs'
+                      : 'border-neutral-300 hover:scale-110 opacity-95'
                   }`}
                   style={{ backgroundColor: c.hex }}
                 />
               ))}
+              <label
+                className="flex items-center space-x-1 cursor-pointer text-xs text-neutral-700 bg-white border border-neutral-300 rounded px-1.5 py-0.5 hover:bg-neutral-100 ml-1"
+                title="點選自訂任意深色或特殊顏色"
+              >
+                <span className="text-[11px] font-medium">自訂：</span>
+                <input
+                  type="color"
+                  value={markupColor}
+                  onChange={(e) => setMarkupColor(e.target.value)}
+                  className="w-5 h-5 rounded cursor-pointer border-0 p-0"
+                />
+              </label>
             </div>
 
             <div className="flex items-center space-x-1.5">
@@ -1101,7 +1194,7 @@ export const PdfVisualPlacement: React.FC<PdfVisualPlacementProps> = ({
       {/* Main Interactive Canvas Viewer Area */}
       <div
         ref={containerRef}
-        className="relative w-full overflow-auto bg-neutral-800/95 p-6 flex items-center justify-center min-h-[440px] max-h-[620px]"
+        className="relative w-full overflow-auto bg-neutral-900/95 pt-8 pb-16 px-6 flex items-start justify-center min-h-[480px] max-h-[800px] scroll-smooth"
         onMouseMove={handleCanvasMouseMove}
         onMouseUp={handleCanvasMouseUp}
       >
@@ -1122,7 +1215,7 @@ export const PdfVisualPlacement: React.FC<PdfVisualPlacementProps> = ({
         {/* The PDF Canvas and Position Overlay */}
         <div
           onMouseDown={handleCanvasMouseDown}
-          className={`relative bg-white shadow-2xl transition-shadow select-none ${
+          className={`relative bg-white shadow-2xl transition-shadow select-none mt-2 mb-12 mx-auto ${
             isLoading ? 'hidden' : 'block'
           } ${toolMode === 'text' ? 'cursor-crosshair' : toolMode === 'image' ? 'cursor-default' : 'cursor-crosshair'}`}
           style={{
@@ -1438,6 +1531,7 @@ export const PdfVisualPlacement: React.FC<PdfVisualPlacementProps> = ({
               }
 
               // If ACTIVE: render full toolbar, drag handle, textarea, and resize handles
+              const isNearTop = topPx < 48;
               return (
                 <div
                   key={item.id}
@@ -1446,14 +1540,16 @@ export const PdfVisualPlacement: React.FC<PdfVisualPlacementProps> = ({
                   style={{
                     left: `${leftPx}px`,
                     top: `${topPx}px`,
-                    transform: 'translate(0, -100%)',
+                    transform: isNearTop ? 'none' : 'translate(0, -100%)',
                   }}
                 >
                   {/* Floating Mini Formatting Toolbar (only shown when selected & editing, hidden while dragging to keep view clean) */}
                   {!isBeingDragged && (
                     <div
                       onMouseDown={(e) => e.stopPropagation()}
-                      className="mb-1 bg-neutral-900 text-white px-2 py-1 rounded-lg shadow-xl flex items-center space-x-2 text-xs animate-in fade-in zoom-in-95 duration-100"
+                      className={`${
+                        isNearTop ? 'order-last mt-1.5' : 'order-first mb-1'
+                      } bg-neutral-900 text-white px-2 py-1 rounded-lg shadow-xl flex items-center space-x-2 text-xs animate-in fade-in zoom-in-95 duration-100`}
                     >
                       {/* 1. Done editing checkmark (Keep the top one as requested) */}
                       <button
@@ -1468,9 +1564,9 @@ export const PdfVisualPlacement: React.FC<PdfVisualPlacementProps> = ({
 
                       <div className="w-[1px] h-3.5 bg-neutral-700" />
 
-                      {/* Color dots */}
+                      {/* Dark, prominent, high-contrast color dots */}
                       <div className="flex items-center space-x-1">
-                        {['#dc2626', '#1d4ed8', '#16a34a', '#000000', '#ea580c', '#9333ea'].map((c) => (
+                        {['#000000', '#b91c1c', '#1d4ed8', '#15803d', '#7e22ce', '#c2410c', '#b45309'].map((c) => (
                           <button
                             key={c}
                             type="button"

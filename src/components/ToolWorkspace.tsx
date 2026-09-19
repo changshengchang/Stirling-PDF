@@ -60,16 +60,27 @@ async function getClientCjkFontBytes(): Promise<Uint8Array | null> {
   return null;
 }
 
-const customClientFontkit: any = {
-  ...fontkit,
-  create: (buf: any, postscriptName?: string) => {
-    const res = (fontkit as any).create(buf, postscriptName);
-    if (res && res.fonts && res.fonts.length > 0) {
-      return res.fonts[0];
-    }
-    return res;
-  },
-};
+// Pre-load font in background to boost performance
+getClientCjkFontBytes().catch(() => {});
+
+function getClientFontkit() {
+  const globalFk = typeof window !== 'undefined' && (window as any).fontkit ? (window as any).fontkit : null;
+  const fk = globalFk || (fontkit as any)?.default || fontkit;
+  return {
+    ...fk,
+    create: (buf: any, postscriptName?: string) => {
+      const fn = fk?.create || fk?.default?.create;
+      if (typeof fn === 'function') {
+        const res = fn(buf, postscriptName);
+        if (res && res.fonts && res.fonts.length > 0) {
+          return res.fonts[0];
+        }
+        return res;
+      }
+      throw new Error('fontkit.create is not available on client');
+    },
+  };
+}
 
 const docCjkFontMap = new WeakMap<PDFDocument, any>();
 
@@ -81,11 +92,18 @@ async function getClientAppropriateFont(pdfDoc: PDFDocument, text: string, prefe
     }
     const fontBytes = await getClientCjkFontBytes();
     if (fontBytes) {
-      pdfDoc.registerFontkit(customClientFontkit);
-      const font = await pdfDoc.embedFont(fontBytes, { subset: true });
-      docCjkFontMap.set(pdfDoc, font);
-      return font;
+      try {
+        const fk = getClientFontkit();
+        pdfDoc.registerFontkit(fk);
+        const font = await pdfDoc.embedFont(fontBytes, { subset: true });
+        docCjkFontMap.set(pdfDoc, font);
+        return font;
+      } catch (err: any) {
+        console.error('Failed to embed client CJK font:', err);
+        throw new Error(`無法在瀏覽器中嵌入中文字型: ${err?.message || err}`);
+      }
     }
+    throw new Error('中文字型載入失敗，無法繪製包含中文的文字方塊');
   }
   try {
     return await pdfDoc.embedFont(preferBold ? StandardFonts.HelveticaBold : StandardFonts.Helvetica);
@@ -95,7 +113,8 @@ async function getClientAppropriateFont(pdfDoc: PDFDocument, text: string, prefe
     }
     const fontBytes = await getClientCjkFontBytes();
     if (fontBytes) {
-      pdfDoc.registerFontkit(customClientFontkit);
+      const fk = getClientFontkit();
+      pdfDoc.registerFontkit(fk);
       const font = await pdfDoc.embedFont(fontBytes, { subset: true });
       docCjkFontMap.set(pdfDoc, font);
       return font;
@@ -122,12 +141,13 @@ const hexToRgb = (hex: string): { r: number; g: number; b: number } => {
 };
 
 const COLOR_PRESETS = [
-  { label: 'Black', hex: '#000000', bg: 'bg-black' },
-  { label: 'Blue', hex: '#1d4ed8', bg: 'bg-blue-700' },
-  { label: 'Red', hex: '#dc2626', bg: 'bg-red-600' },
-  { label: 'Green', hex: '#15803d', bg: 'bg-green-700' },
-  { label: 'Purple', hex: '#7e22ce', bg: 'bg-purple-700' },
-  { label: 'Orange', hex: '#d97706', bg: 'bg-amber-600' },
+  { label: '極致深黑', hex: '#000000', bg: 'bg-black' },
+  { label: '鮮明深紅', hex: '#b91c1c', bg: 'bg-red-700' },
+  { label: '尊爵深藍', hex: '#1d4ed8', bg: 'bg-blue-700' },
+  { label: '沉穩深綠', hex: '#15803d', bg: 'bg-green-700' },
+  { label: '深曜濃紫', hex: '#7e22ce', bg: 'bg-purple-700' },
+  { label: '深焦琥珀', hex: '#c2410c', bg: 'bg-orange-700' },
+  { label: '高對比褐金', hex: '#b45309', bg: 'bg-amber-700' },
 ];
 
 interface ToolWorkspaceProps {
@@ -201,15 +221,18 @@ export const ToolWorkspace: React.FC<ToolWorkspaceProps> = ({ tool, onBack }) =>
     );
   };
 
-  const handleAddTextGroup = () => {
+  const [currentVisualPage, setCurrentVisualPage] = useState<number>(1);
+
+  const handleAddTextGroup = (targetPage?: number) => {
     const newId = `text-${Date.now()}`;
+    const pageToUse = typeof targetPage === 'number' && targetPage > 0 ? targetPage : currentVisualPage;
     const newItem: TextAnnotationItem = {
       id: newId,
       text: `第 ${textItems.length + 1} 組文字`,
-      color: '#1d4ed8',
+      color: '#b91c1c',
       fontSize: 16,
       underline: false,
-      page: 1,
+      page: pageToUse,
       x: 80,
       y: Math.max(30, (textItems[textItems.length - 1]?.y || 120) - 35),
       position: 'custom',
@@ -1289,7 +1312,8 @@ export const ToolWorkspace: React.FC<ToolWorkspaceProps> = ({ tool, onBack }) =>
                             if (updates.underline !== undefined) setAddTextUnderline(updates.underline);
                           }
                         }}
-                        onAddTextItem={handleAddTextGroup}
+                        onPageChange={(page) => setCurrentVisualPage(page)}
+                        onAddTextItem={(page) => handleAddTextGroup(page || currentVisualPage)}
                         onDeleteTextItem={handleDeleteTextGroup}
                         markups={markups}
                         onAddMarkup={(m) => setMarkups((prev) => [...prev, m])}
@@ -1386,13 +1410,22 @@ export const ToolWorkspace: React.FC<ToolWorkspaceProps> = ({ tool, onBack }) =>
                             ? 'bg-red-50 border-red-400 text-red-700 shadow-2xs'
                             : 'bg-neutral-50 border-neutral-200 text-neutral-700 hover:bg-neutral-100'
                         }`}
-                        onClick={() => setActiveTextId(item.id)}
+                        onClick={() => {
+                          setActiveTextId(item.id);
+                          const p = typeof item.page === 'number' ? item.page : parseInt((item as any).page, 10);
+                          if (!isNaN(p) && p >= 1) {
+                            setCurrentVisualPage(p);
+                          }
+                        }}
                       >
                         <span
                           className="w-2 h-2 rounded-full inline-block"
                           style={{ backgroundColor: item.color }}
                         />
                         <span className="max-w-24 truncate">{item.text || `組別 #${idx + 1}`}</span>
+                        <span className="text-[10px] font-mono px-1 py-0.2 rounded bg-neutral-200 text-neutral-800 font-semibold">
+                          P.{item.page || 1}
+                        </span>
                         {textItems.length > 1 && (
                           <button
                             type="button"
@@ -1400,7 +1433,7 @@ export const ToolWorkspace: React.FC<ToolWorkspaceProps> = ({ tool, onBack }) =>
                               e.stopPropagation();
                               handleDeleteTextGroup(item.id);
                             }}
-                            className="text-neutral-400 hover:text-red-600 ml-1"
+                            className="text-neutral-400 hover:text-red-600 ml-1 cursor-pointer"
                             title="刪除此組文字"
                           >
                             <X className="w-3 h-3" />
@@ -1411,11 +1444,12 @@ export const ToolWorkspace: React.FC<ToolWorkspaceProps> = ({ tool, onBack }) =>
 
                     <button
                       type="button"
-                      onClick={handleAddTextGroup}
-                      className="px-2.5 py-1 bg-neutral-900 hover:bg-black text-white text-xs font-semibold rounded-md flex items-center space-x-1 transition-colors cursor-pointer ml-auto"
+                      onClick={() => handleAddTextGroup(currentVisualPage)}
+                      className="px-2.5 py-1 bg-neutral-900 hover:bg-black text-white text-xs font-semibold rounded-md flex items-center space-x-1 transition-colors cursor-pointer ml-auto shadow-2xs"
+                      title={`在第 ${currentVisualPage} 頁新增一組文字`}
                     >
                       <Plus className="w-3.5 h-3.5" />
-                      <span>新增第 {textItems.length + 1} 組文字</span>
+                      <span>新增第 {textItems.length + 1} 組文字 (第 {currentVisualPage} 頁)</span>
                     </button>
                   </div>
 
