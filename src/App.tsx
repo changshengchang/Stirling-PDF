@@ -1,11 +1,16 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, Suspense } from 'react';
 import { Header } from './components/Header';
 import { ToolCard } from './components/ToolCard';
-import { ToolWorkspace } from './components/ToolWorkspace';
-import { ApiExplorer } from './components/ApiExplorer';
 import { TOOLS } from './data/tools';
 import { PdfTool, ToolCategory } from './types';
 import { FileText, Shield, Zap, Lock } from 'lucide-react';
+
+const ToolWorkspace = React.lazy(() =>
+  import('./components/ToolWorkspace').then((m) => ({ default: m.ToolWorkspace }))
+);
+const ApiExplorer = React.lazy(() =>
+  import('./components/ApiExplorer').then((m) => ({ default: m.ApiExplorer }))
+);
 
 export const App: React.FC = () => {
   const [activeCategory, setActiveCategory] = useState<ToolCategory>('all');
@@ -41,11 +46,19 @@ export const App: React.FC = () => {
       />
 
       <main className="flex-1">
-        {activeView === 'api' ? (
-          <ApiExplorer />
-        ) : selectedTool ? (
-          <ToolWorkspace tool={selectedTool} onBack={() => setSelectedTool(null)} />
-        ) : (
+        <Suspense
+          fallback={
+            <div className="flex flex-col items-center justify-center py-28 text-center">
+              <div className="w-9 h-9 border-3 border-neutral-200 border-t-red-600 rounded-full animate-spin mb-3" />
+              <p className="text-sm font-medium text-neutral-600">正在快速載入工作區...</p>
+            </div>
+          }
+        >
+          {activeView === 'api' ? (
+            <ApiExplorer />
+          ) : selectedTool ? (
+            <ToolWorkspace tool={selectedTool} onBack={() => setSelectedTool(null)} />
+          ) : (
           <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8">
             {/* Feature Highlights bar */}
             <div className="mb-8 p-4 bg-white rounded-xl border border-neutral-200 shadow-xs flex flex-wrap items-center justify-between gap-4 text-xs text-neutral-600">
@@ -101,6 +114,7 @@ export const App: React.FC = () => {
             )}
           </div>
         )}
+        </Suspense>
       </main>
 
       <footer className="border-t border-neutral-200 bg-white py-6 mt-12 text-center text-xs text-neutral-500">

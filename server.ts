@@ -244,7 +244,7 @@ async function startServer() {
     }
   });
 
-  // Custom fontkit wrapper to safely handle TrueType Collection (.ttc) files like wqy-zenhei.ttc
+  // Custom fontkit wrapper to safely handle TrueType (.ttf) and TrueType Collection (.ttc) files
   const customFontkit: any = {
     ...fontkit,
     create: (buf: any, postscriptName?: string) => {
@@ -257,29 +257,50 @@ async function startServer() {
   };
 
   let cjkFontBuffer: Buffer | null = null;
-  const CJK_FONT_PATH = '/usr/share/fonts/truetype/wqy/wqy-zenhei.ttc';
-  try {
-    if (fs.existsSync(CJK_FONT_PATH)) {
-      cjkFontBuffer = fs.readFileSync(CJK_FONT_PATH);
-      console.log('Loaded system CJK font from:', CJK_FONT_PATH, 'size:', cjkFontBuffer.length);
+  const FONT_CANDIDATE_PATHS = [
+    path.join(process.cwd(), 'public/fonts/NotoSansTC-Regular.ttf'),
+    path.join(process.cwd(), 'app/core/src/main/resources/static/fonts/NotoSansTC-Regular.ttf'),
+    '/usr/share/fonts/truetype/noto/NotoSansTC-Regular.ttf',
+    '/usr/share/fonts/truetype/wqy/wqy-zenhei.ttc',
+  ];
+
+  for (const fontPath of FONT_CANDIDATE_PATHS) {
+    try {
+      if (fs.existsSync(fontPath)) {
+        cjkFontBuffer = fs.readFileSync(fontPath);
+        console.log('Successfully loaded Chinese TrueType font (Noto Sans TC) from:', fontPath, 'size:', cjkFontBuffer.length);
+        break;
+      }
+    } catch (e) {
+      console.warn('Could not read font from:', fontPath, e);
     }
-  } catch (e) {
-    console.warn('Could not preload CJK font:', e);
   }
+
+  const serverDocFontMap = new WeakMap<PDFDocument, any>();
 
   // Helper to embed appropriate font (supporting Traditional/Simplified Chinese, Japanese, and Latin)
   async function getAppropriateFont(pdfDoc: PDFDocument, text: string, preferBold: boolean = true) {
     const hasNonAscii = /[^\u0000-\u007F]/.test(text);
     if (cjkFontBuffer && hasNonAscii) {
+      if (serverDocFontMap.has(pdfDoc)) {
+        return serverDocFontMap.get(pdfDoc);
+      }
       pdfDoc.registerFontkit(customFontkit);
-      return await pdfDoc.embedFont(cjkFontBuffer, { subset: true });
+      const embeddedFont = await pdfDoc.embedFont(cjkFontBuffer, { subset: true });
+      serverDocFontMap.set(pdfDoc, embeddedFont);
+      return embeddedFont;
     }
     try {
       return await pdfDoc.embedFont(preferBold ? StandardFonts.HelveticaBold : StandardFonts.Helvetica);
     } catch (e) {
       if (cjkFontBuffer) {
+        if (serverDocFontMap.has(pdfDoc)) {
+          return serverDocFontMap.get(pdfDoc);
+        }
         pdfDoc.registerFontkit(customFontkit);
-        return await pdfDoc.embedFont(cjkFontBuffer, { subset: true });
+        const embeddedFont = await pdfDoc.embedFont(cjkFontBuffer, { subset: true });
+        serverDocFontMap.set(pdfDoc, embeddedFont);
+        return embeddedFont;
       }
       throw e;
     }
@@ -288,7 +309,7 @@ async function startServer() {
   // Endpoint to serve CJK font to client for browser-side rendering if needed
   app.get('/api/v1/fonts/cjk', (req, res) => {
     if (cjkFontBuffer) {
-      res.setHeader('Content-Type', 'font/collection');
+      res.setHeader('Content-Type', 'font/ttf');
       res.setHeader('Cache-Control', 'public, max-age=86400');
       res.send(cjkFontBuffer);
     } else {

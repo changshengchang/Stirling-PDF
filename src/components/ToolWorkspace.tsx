@@ -29,11 +29,24 @@ import {
 import { PDFDocument, degrees, rgb, StandardFonts } from 'pdf-lib';
 import fontkit from '@pdf-lib/fontkit';
 import { PdfTool, PdfMetadata, TextAnnotationItem, MarkupAnnotationItem, PastedImageItem } from '../types';
-import { PdfVisualPlacement } from './PdfVisualPlacement';
+
+const PdfVisualPlacement = React.lazy(() =>
+  import('./PdfVisualPlacement').then((m) => ({ default: m.PdfVisualPlacement }))
+);
 
 let cachedCjkFontBytes: Uint8Array | null = null;
 async function getClientCjkFontBytes(): Promise<Uint8Array | null> {
   if (cachedCjkFontBytes) return cachedCjkFontBytes;
+  // Try static route first, then fall back to backend API
+  try {
+    const res = await fetch('/fonts/NotoSansTC-Regular.ttf');
+    if (res.ok) {
+      const arr = await res.arrayBuffer();
+      cachedCjkFontBytes = new Uint8Array(arr);
+      return cachedCjkFontBytes;
+    }
+  } catch (_) {}
+
   try {
     const res = await fetch('/api/v1/fonts/cjk');
     if (res.ok) {
@@ -58,22 +71,34 @@ const customClientFontkit: any = {
   },
 };
 
+const docCjkFontMap = new WeakMap<PDFDocument, any>();
+
 async function getClientAppropriateFont(pdfDoc: PDFDocument, text: string, preferBold: boolean = true) {
   const hasNonAscii = /[^\u0000-\u007F]/.test(text);
   if (hasNonAscii) {
+    if (docCjkFontMap.has(pdfDoc)) {
+      return docCjkFontMap.get(pdfDoc);
+    }
     const fontBytes = await getClientCjkFontBytes();
     if (fontBytes) {
       pdfDoc.registerFontkit(customClientFontkit);
-      return await pdfDoc.embedFont(fontBytes, { subset: true });
+      const font = await pdfDoc.embedFont(fontBytes, { subset: true });
+      docCjkFontMap.set(pdfDoc, font);
+      return font;
     }
   }
   try {
     return await pdfDoc.embedFont(preferBold ? StandardFonts.HelveticaBold : StandardFonts.Helvetica);
   } catch (e) {
+    if (docCjkFontMap.has(pdfDoc)) {
+      return docCjkFontMap.get(pdfDoc);
+    }
     const fontBytes = await getClientCjkFontBytes();
     if (fontBytes) {
       pdfDoc.registerFontkit(customClientFontkit);
-      return await pdfDoc.embedFont(fontBytes, { subset: true });
+      const font = await pdfDoc.embedFont(fontBytes, { subset: true });
+      docCjkFontMap.set(pdfDoc, font);
+      return font;
     }
     throw e;
   }
@@ -1235,60 +1260,69 @@ export const ToolWorkspace: React.FC<ToolWorkspaceProps> = ({ tool, onBack }) =>
                   </div>
 
                   {showVisualPlacement && (
-                    <PdfVisualPlacement
-                      file={files[0]}
-                      textItems={textItems}
-                      activeTextId={activeTextId}
-                      onSelectActiveText={(id: string) => setActiveTextId(id)}
-                      onUpdateTextPosition={(id, x, y, page) => {
-                        setTextItems((prev) =>
-                          prev.map((t) => (t.id === id ? { ...t, x, y, page, position: 'custom' } : t))
-                        );
-                      }}
-                      onUpdateTextItem={(id, updates) => {
-                        setTextItems((prev) =>
-                          prev.map((t) => (t.id === id ? { ...t, ...updates } : t))
-                        );
-                        if (id === activeTextId) {
-                          if (updates.text !== undefined) setAddTextInput(updates.text);
-                          if (updates.color !== undefined) setAddTextColor(updates.color);
-                          if (updates.fontSize !== undefined) setAddTextFontSize(updates.fontSize.toString());
-                          if (updates.underline !== undefined) setAddTextUnderline(updates.underline);
+                    <React.Suspense
+                      fallback={
+                        <div className="p-12 text-center bg-white rounded-xl border border-neutral-200 text-neutral-500 text-xs flex flex-col items-center justify-center space-y-2">
+                          <Loader2 className="w-6 h-6 animate-spin text-red-600" />
+                          <span>正在載入 PDF 可視化編輯畫布...</span>
+                        </div>
+                      }
+                    >
+                      <PdfVisualPlacement
+                        file={files[0]}
+                        textItems={textItems}
+                        activeTextId={activeTextId}
+                        onSelectActiveText={(id: string) => setActiveTextId(id)}
+                        onUpdateTextPosition={(id, x, y, page) => {
+                          setTextItems((prev) =>
+                            prev.map((t) => (t.id === id ? { ...t, x, y, page, position: 'custom' } : t))
+                          );
+                        }}
+                        onUpdateTextItem={(id, updates) => {
+                          setTextItems((prev) =>
+                            prev.map((t) => (t.id === id ? { ...t, ...updates } : t))
+                          );
+                          if (id === activeTextId) {
+                            if (updates.text !== undefined) setAddTextInput(updates.text);
+                            if (updates.color !== undefined) setAddTextColor(updates.color);
+                            if (updates.fontSize !== undefined) setAddTextFontSize(updates.fontSize.toString());
+                            if (updates.underline !== undefined) setAddTextUnderline(updates.underline);
+                          }
+                        }}
+                        onAddTextItem={handleAddTextGroup}
+                        onDeleteTextItem={handleDeleteTextGroup}
+                        markups={markups}
+                        onAddMarkup={(m) => setMarkups((prev) => [...prev, m])}
+                        onUpdateMarkup={(id, updates) =>
+                          setMarkups((prev) =>
+                            prev.map((m) => (m.id === id ? { ...m, ...updates } : m))
+                          )
                         }
-                      }}
-                      onAddTextItem={handleAddTextGroup}
-                      onDeleteTextItem={handleDeleteTextGroup}
-                      markups={markups}
-                      onAddMarkup={(m) => setMarkups((prev) => [...prev, m])}
-                      onUpdateMarkup={(id, updates) =>
-                        setMarkups((prev) =>
-                          prev.map((m) => (m.id === id ? { ...m, ...updates } : m))
-                        )
-                      }
-                      onDeleteMarkup={(id) => setMarkups((prev) => prev.filter((m) => m.id !== id))}
-                      pastedImages={pastedImages}
-                      onAddImage={(img) => setPastedImages((prev) => [...prev, img])}
-                      onUpdateImage={(id, updates) =>
-                        setPastedImages((prev) =>
-                          prev.map((im) => (im.id === id ? { ...im, ...updates } : im))
-                        )
-                      }
-                      onDeleteImage={(id) => setPastedImages((prev) => prev.filter((im) => im.id !== id))}
-                      // Fallback props
-                      text={addTextInput}
-                      color={addTextColor}
-                      underline={addTextUnderline}
-                      fontSize={parseInt(addTextFontSize || '16', 10)}
-                      customX={parseFloat(addTextCustomX) || 0}
-                      customY={parseFloat(addTextCustomY) || 0}
-                      targetPageStr={addTextTargetPages}
-                      onPositionSelected={(x, y, pageNum) => {
-                        setAddTextCustomX(x.toString());
-                        setAddTextCustomY(y.toString());
-                        setAddTextPosition('custom');
-                        setAddTextTargetPages(pageNum.toString());
-                      }}
-                    />
+                        onDeleteMarkup={(id) => setMarkups((prev) => prev.filter((m) => m.id !== id))}
+                        pastedImages={pastedImages}
+                        onAddImage={(img) => setPastedImages((prev) => [...prev, img])}
+                        onUpdateImage={(id, updates) =>
+                          setPastedImages((prev) =>
+                            prev.map((im) => (im.id === id ? { ...im, ...updates } : im))
+                          )
+                        }
+                        onDeleteImage={(id) => setPastedImages((prev) => prev.filter((im) => im.id !== id))}
+                        // Fallback props
+                        text={addTextInput}
+                        color={addTextColor}
+                        underline={addTextUnderline}
+                        fontSize={parseInt(addTextFontSize || '16', 10)}
+                        customX={parseFloat(addTextCustomX) || 0}
+                        customY={parseFloat(addTextCustomY) || 0}
+                        targetPageStr={addTextTargetPages}
+                        onPositionSelected={(x, y, pageNum) => {
+                          setAddTextCustomX(x.toString());
+                          setAddTextCustomY(y.toString());
+                          setAddTextPosition('custom');
+                          setAddTextTargetPages(pageNum.toString());
+                        }}
+                      />
+                    </React.Suspense>
                   )}
                 </div>
               )}
