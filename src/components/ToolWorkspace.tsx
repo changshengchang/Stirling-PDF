@@ -1312,6 +1312,7 @@ export const ToolWorkspace: React.FC<ToolWorkspaceProps> = ({ tool, onBack }) =>
                             if (updates.underline !== undefined) setAddTextUnderline(updates.underline);
                           }
                         }}
+                        currentPage={currentVisualPage}
                         onPageChange={(page) => setCurrentVisualPage(page)}
                         onAddTextItem={(page) => handleAddTextGroup(page || currentVisualPage)}
                         onDeleteTextItem={handleDeleteTextGroup}

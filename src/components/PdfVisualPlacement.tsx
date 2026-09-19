@@ -43,6 +43,7 @@ export interface PdfVisualPlacementProps {
   onUpdateTextItem?: (id: string, updates: Partial<TextAnnotationItem>) => void;
   onAddTextItem: (targetPage?: number) => void;
   onDeleteTextItem: (id: string) => void;
+  currentPage?: number;
   onPageChange?: (page: number) => void;
 
   markups: MarkupAnnotationItem[];
@@ -87,6 +88,7 @@ export const PdfVisualPlacement: React.FC<PdfVisualPlacementProps> = ({
   onUpdateTextItem,
   onAddTextItem,
   onDeleteTextItem,
+  currentPage: externalPage,
   onPageChange,
   markups,
   onAddMarkup,
@@ -101,12 +103,24 @@ export const PdfVisualPlacement: React.FC<PdfVisualPlacementProps> = ({
 }) => {
   const images = imagesProp.length > 0 ? imagesProp : pastedImagesProp;
   const [numPages, setNumPages] = useState<number>(1);
-  const [currentPage, setCurrentPage] = useState<number>(1);
+  const [currentPage, setCurrentPage] = useState<number>(externalPage || 1);
   const [pdfDoc, setPdfDoc] = useState<any>(null);
   const [isLoading, setIsLoading] = useState<boolean>(true);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [scale, setScale] = useState<number>(1.0);
   const [pageSize, setPageSize] = useState<{ width: number; height: number }>({ width: 595, height: 842 });
+
+  const onPageChangeRef = useRef(onPageChange);
+  useEffect(() => {
+    onPageChangeRef.current = onPageChange;
+  });
+
+  // Keep internal page in sync when externalPage changes
+  useEffect(() => {
+    if (typeof externalPage === 'number' && externalPage >= 1 && externalPage !== currentPage) {
+      setCurrentPage(externalPage);
+    }
+  }, [externalPage]);
 
   // Tool mode
   const [toolMode, setToolMode] = useState<EditorToolMode>('text');
@@ -162,6 +176,7 @@ export const PdfVisualPlacement: React.FC<PdfVisualPlacementProps> = ({
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
   const containerRef = useRef<HTMLDivElement | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const lastLoadedFileKeyRef = useRef<string>('');
 
   // Ensure the view resets to the top of the PDF whenever page or file changes so header is immediately visible
   useEffect(() => {
@@ -172,6 +187,12 @@ export const PdfVisualPlacement: React.FC<PdfVisualPlacementProps> = ({
 
   // Load PDF Document
   useEffect(() => {
+    if (!file) return;
+    const fileKey = `${file.name}-${file.size}-${file.lastModified}`;
+    if (lastLoadedFileKeyRef.current === fileKey && pdfDoc) {
+      return;
+    }
+
     let isCancelled = false;
     setIsLoading(true);
     setLoadError(null);
@@ -188,10 +209,12 @@ export const PdfVisualPlacement: React.FC<PdfVisualPlacementProps> = ({
         const doc = await loadingTask.promise;
         if (isCancelled) return;
 
+        lastLoadedFileKeyRef.current = fileKey;
         setPdfDoc(doc);
         setNumPages(doc.numPages);
-        setCurrentPage(1);
-        onPageChange?.(1);
+        const initPage = externalPage && externalPage <= doc.numPages ? externalPage : 1;
+        setCurrentPage(initPage);
+        onPageChangeRef.current?.(initPage);
         setIsLoading(false);
       } catch (err: any) {
         if (isCancelled) return;
@@ -206,18 +229,18 @@ export const PdfVisualPlacement: React.FC<PdfVisualPlacementProps> = ({
     return () => {
       isCancelled = true;
     };
-  }, [file, onPageChange]);
+  }, [file]);
 
   const handlePageChange = useCallback(
     (newPage: number) => {
       const clamped = Math.max(1, Math.min(numPages, newPage));
       setCurrentPage(clamped);
-      onPageChange?.(clamped);
+      onPageChangeRef.current?.(clamped);
       if (containerRef.current) {
         containerRef.current.scrollTop = 0;
       }
     },
-    [numPages, onPageChange]
+    [numPages]
   );
 
   // Render current page to canvas
@@ -865,9 +888,24 @@ export const PdfVisualPlacement: React.FC<PdfVisualPlacementProps> = ({
             >
               <ChevronLeft className="w-4 h-4" />
             </button>
-            <span className="px-2 text-[11px] font-mono font-medium text-neutral-200 select-none">
-              {currentPage} / {numPages}
-            </span>
+            <div className="flex items-center px-1.5 space-x-1">
+              <select
+                value={currentPage}
+                onChange={(e) => handlePageChange(Number(e.target.value))}
+                disabled={isLoading || numPages <= 1}
+                className="bg-neutral-900 text-white text-xs font-mono font-bold rounded px-1.5 py-0.5 border border-neutral-600 focus:outline-none focus:border-blue-500 cursor-pointer"
+                title="點擊選擇頁數"
+              >
+                {Array.from({ length: numPages }, (_, i) => i + 1).map((p) => (
+                  <option key={p} value={p}>
+                    第 {p} 頁
+                  </option>
+                ))}
+              </select>
+              <span className="text-[11px] font-mono font-medium text-neutral-400 select-none whitespace-nowrap">
+                / {numPages}
+              </span>
+            </div>
             <button
               type="button"
               onClick={() => handlePageChange(currentPage + 1)}
