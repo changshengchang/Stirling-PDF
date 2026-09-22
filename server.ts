@@ -261,9 +261,59 @@ async function startServer() {
     },
   };
 
+  function extractTtcFont0(ttcBuf: Buffer): Buffer {
+    if (ttcBuf.length < 16 || ttcBuf.slice(0, 4).toString() !== 'ttcf') {
+      return ttcBuf;
+    }
+    try {
+      const font0Offset = ttcBuf.readUInt32BE(12);
+      const numTables = ttcBuf.readUInt16BE(font0Offset + 4);
+      const headerSize = 12 + numTables * 16;
+      const tables: Array<{ tag: string; checkSum: number; length: number; data: Buffer; newOffset?: number }> = [];
+      for (let t = 0; t < numTables; t++) {
+        const tOffset = font0Offset + 12 + t * 16;
+        const tag = ttcBuf.slice(tOffset, tOffset + 4).toString();
+        const checkSum = ttcBuf.readUInt32BE(tOffset + 4);
+        const offset = ttcBuf.readUInt32BE(tOffset + 8);
+        const length = ttcBuf.readUInt32BE(tOffset + 12);
+        const data = ttcBuf.slice(offset, offset + length);
+        tables.push({ tag, checkSum, length, data });
+      }
+      tables.sort((a, b) => a.tag.localeCompare(b.tag));
+      let currentOffset = headerSize;
+      for (const t of tables) {
+        currentOffset = (currentOffset + 3) & ~3;
+        t.newOffset = currentOffset;
+        currentOffset += t.length;
+      }
+      const outBuf = Buffer.alloc(currentOffset);
+      outBuf.writeUInt32BE(0x00010000, 0);
+      outBuf.writeUInt16BE(numTables, 4);
+      const maxPowerOf2 = Math.pow(2, Math.floor(Math.log2(numTables)));
+      const searchRange = maxPowerOf2 * 16;
+      outBuf.writeUInt16BE(searchRange, 6);
+      outBuf.writeUInt16BE(Math.floor(Math.log2(numTables)), 8);
+      outBuf.writeUInt16BE(numTables * 16 - searchRange, 10);
+      for (let i = 0; i < tables.length; i++) {
+        const t = tables[i];
+        const recOffset = 12 + i * 16;
+        outBuf.write(t.tag, recOffset, 4, 'ascii');
+        outBuf.writeUInt32BE(t.checkSum, recOffset + 4);
+        outBuf.writeUInt32BE(t.newOffset!, recOffset + 8);
+        outBuf.writeUInt32BE(t.length, recOffset + 12);
+        t.data.copy(outBuf, t.newOffset!);
+      }
+      return outBuf;
+    } catch (err) {
+      console.warn('Failed to extract TTF from TTC collection, falling back to original buffer:', err);
+      return ttcBuf;
+    }
+  }
+
   let cjkFontBuffer: Buffer | null = null;
   const FONT_CANDIDATE_PATHS = [
     path.join(process.cwd(), 'public/fonts/NotoSansTC-Regular.ttf'),
+    path.join(process.cwd(), 'public/fonts/cjk-font.ttf'),
     path.join(process.cwd(), 'app/core/src/main/resources/static/fonts/NotoSansTC-Regular.ttf'),
     '/usr/share/fonts/truetype/noto/NotoSansTC-Regular.ttf',
     '/usr/share/fonts/truetype/wqy/wqy-zenhei.ttc',
@@ -272,8 +322,9 @@ async function startServer() {
   for (const fontPath of FONT_CANDIDATE_PATHS) {
     try {
       if (fs.existsSync(fontPath)) {
-        cjkFontBuffer = fs.readFileSync(fontPath);
-        console.log('Successfully loaded Chinese TrueType font (Noto Sans TC) from:', fontPath, 'size:', cjkFontBuffer.length);
+        const rawBuf = fs.readFileSync(fontPath);
+        cjkFontBuffer = extractTtcFont0(rawBuf);
+        console.log('Successfully loaded Chinese TrueType font from:', fontPath, 'size:', cjkFontBuffer.length);
         break;
       }
     } catch (e) {

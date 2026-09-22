@@ -48,6 +48,15 @@ async function getClientCjkFontBytes(): Promise<Uint8Array | null> {
   } catch (_) {}
 
   try {
+    const res = await fetch('/fonts/cjk-font.ttf');
+    if (res.ok) {
+      const arr = await res.arrayBuffer();
+      cachedCjkFontBytes = new Uint8Array(arr);
+      return cachedCjkFontBytes;
+    }
+  } catch (_) {}
+
+  try {
     const res = await fetch('/api/v1/fonts/cjk');
     if (res.ok) {
       const arr = await res.arrayBuffer();
